@@ -1,0 +1,15 @@
+# Binaries
+aurabot
+*.exe
+
+# Databases / runtime data
+data/
+*.db
+
+# Env files / secrets
+.env
+.env.*
+
+# OS junk
+.DS_Store
+Thumbs.db

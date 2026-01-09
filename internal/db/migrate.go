@@ -1,0 +1,246 @@
+package db
+
+import (
+	"database/sql"
+)
+
+// Migrate ensures the SQLite schema is up-to-date.
+// This bot is single-server for XP + level-up messages (no guild_id there),
+// but autoroles remains guild-scoped.
+func Migrate(d *sql.DB) error {
+	// SQLiteStudio convenience views; bot never relies on them.
+	_, _ = d.Exec(`DROP VIEW IF EXISTS "User XP";`)
+	_, _ = d.Exec(`DROP VIEW IF EXISTS "Level Up Messages";`)
+
+	// Base schema (idempotent)
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS voting_threads (
+			message_id TEXT PRIMARY KEY,
+			channel_id TEXT NOT NULL,
+			thread_id  TEXT NOT NULL,
+			created_at INTEGER NOT NULL
+		);`,
+
+		`CREATE TABLE IF NOT EXISTS starboard_posts (
+			original_message_id TEXT PRIMARY KEY,
+			original_channel_id TEXT NOT NULL,
+			starboard_message_id TEXT NOT NULL,
+			starboard_channel_id TEXT NOT NULL,
+			created_at INTEGER NOT NULL
+		);`,
+
+		// Single-server XP table (NO guild_id)
+		`CREATE TABLE IF NOT EXISTS user_xp (
+			user_id    TEXT PRIMARY KEY,
+			username   TEXT NOT NULL DEFAULT '',
+			xp         INTEGER NOT NULL DEFAULT 0,
+			last_xp_at INTEGER NOT NULL DEFAULT 0
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_user_xp_xp ON user_xp(xp DESC);`,
+
+		// Guild-scoped autoroles (keeps guild_id)
+		`CREATE TABLE IF NOT EXISTS autoroles (
+			guild_id   TEXT NOT NULL,
+			channel_id TEXT NOT NULL,
+			message_id TEXT NOT NULL,
+			emoji_key  TEXT NOT NULL,
+			role_id    TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			PRIMARY KEY (guild_id, message_id, emoji_key)
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_autoroles_guild_message ON autoroles(guild_id, message_id);`,
+
+		// Single-server level-up messages (NO guild_id)
+		`CREATE TABLE IF NOT EXISTS level_up_messages (
+			user_id    TEXT NOT NULL,
+			username   TEXT NOT NULL DEFAULT '',
+			level      INTEGER NOT NULL,
+			channel_id TEXT NOT NULL,
+			message_id TEXT NOT NULL,
+			content    TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			PRIMARY KEY (user_id, level)
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_level_up_messages_user ON level_up_messages(user_id);`,
+	}
+
+	for _, q := range stmts {
+		if _, err := d.Exec(q); err != nil {
+			return err
+		}
+	}
+
+	// Additive schema upgrades (safe on existing DBs)
+	if err := ensureColumn(d, "starboard_posts", "author_id", `ALTER TABLE starboard_posts ADD COLUMN author_id TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if err := ensureColumn(d, "starboard_posts", "stars_count", `ALTER TABLE starboard_posts ADD COLUMN stars_count INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return err
+	}
+	if err := ensureColumn(d, "autoroles", "emoji_api", `ALTER TABLE autoroles ADD COLUMN emoji_api TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+
+	// Rebuild old experimental schemas that included guild_id
+	if err := migrateUserXPToSingleServer(d); err != nil {
+		return err
+	}
+	if err := migrateLevelUpMessagesToSingleServer(d); err != nil {
+		return err
+	}
+
+	// Ensure indexes exist even after rebuilds
+	_, _ = d.Exec(`CREATE INDEX IF NOT EXISTS idx_user_xp_xp ON user_xp(xp DESC);`)
+	_, _ = d.Exec(`CREATE INDEX IF NOT EXISTS idx_level_up_messages_user ON level_up_messages(user_id);`)
+
+	return nil
+}
+
+func ensureColumn(d *sql.DB, table, column, alterSQL string) error {
+	ok, err := hasColumn(d, table, column)
+	if err != nil {
+		return err
+	}
+	if ok {
+		return nil
+	}
+	_, err = d.Exec(alterSQL)
+	return err
+}
+
+func migrateUserXPToSingleServer(d *sql.DB) error {
+	// If user_xp has guild_id, rebuild to remove it.
+	hasGuild, err := hasColumn(d, "user_xp", "guild_id")
+	if err != nil {
+		return err
+	}
+	if !hasGuild {
+		// Ensure username exists on older minimal schemas
+		return ensureColumn(d, "user_xp", "username", `ALTER TABLE user_xp ADD COLUMN username TEXT NOT NULL DEFAULT ''`)
+	}
+
+	hasUsername, _ := hasColumn(d, "user_xp", "username")
+
+	tx, err := d.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.Exec(`
+		CREATE TABLE IF NOT EXISTS user_xp_new (
+			user_id    TEXT PRIMARY KEY,
+			username   TEXT NOT NULL DEFAULT '',
+			xp         INTEGER NOT NULL DEFAULT 0,
+			last_xp_at INTEGER NOT NULL DEFAULT 0
+		);
+	`); err != nil {
+		return err
+	}
+
+	if hasUsername {
+		_, err = tx.Exec(`
+			INSERT OR REPLACE INTO user_xp_new(user_id, username, xp, last_xp_at)
+			SELECT user_id, MAX(username), MAX(xp), MAX(last_xp_at)
+			FROM user_xp
+			GROUP BY user_id;
+		`)
+	} else {
+		_, err = tx.Exec(`
+			INSERT OR REPLACE INTO user_xp_new(user_id, username, xp, last_xp_at)
+			SELECT user_id, '', MAX(xp), MAX(last_xp_at)
+			FROM user_xp
+			GROUP BY user_id;
+		`)
+	}
+	if err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(`DROP TABLE user_xp;`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`ALTER TABLE user_xp_new RENAME TO user_xp;`); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+func migrateLevelUpMessagesToSingleServer(d *sql.DB) error {
+	// If the table doesn't exist yet, CREATE TABLE above handled it.
+	// If PRAGMA fails for some reason, just skip and let next run succeed.
+	hasGuild, err := hasColumn(d, "level_up_messages", "guild_id")
+	if err != nil {
+		return nil
+	}
+	if !hasGuild {
+		// Ensure username exists on older minimal schemas
+		return ensureColumn(d, "level_up_messages", "username", `ALTER TABLE level_up_messages ADD COLUMN username TEXT NOT NULL DEFAULT ''`)
+	}
+
+	tx, err := d.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.Exec(`
+		CREATE TABLE IF NOT EXISTS level_up_messages_new (
+			user_id    TEXT NOT NULL,
+			username   TEXT NOT NULL DEFAULT '',
+			level      INTEGER NOT NULL,
+			channel_id TEXT NOT NULL,
+			message_id TEXT NOT NULL,
+			content    TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			PRIMARY KEY (user_id, level)
+		);
+	`); err != nil {
+		return err
+	}
+
+	// Historical rows may not have username info.
+	if _, err := tx.Exec(`
+		INSERT OR REPLACE INTO level_up_messages_new(user_id, username, level, channel_id, message_id, content, created_at)
+		SELECT user_id, '', level, channel_id, message_id, content, created_at
+		FROM level_up_messages;
+	`); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(`DROP TABLE level_up_messages;`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`ALTER TABLE level_up_messages_new RENAME TO level_up_messages;`); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+func hasColumn(d *sql.DB, table, column string) (bool, error) {
+	rows, err := d.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			ctype     string
+			notnull   int
+			dfltValue sql.NullString
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
