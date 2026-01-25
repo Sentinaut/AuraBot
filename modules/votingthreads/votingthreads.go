@@ -47,6 +47,34 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 		return
 	}
 
+	// If this message is a reply to another message, block it and DM the author.
+	// This enforces "no replies in the channel — use the generated thread".
+	if e.Message.Reference != nil && e.Message.Reference.MessageID != "" {
+		refMsgID := e.Message.Reference.MessageID
+
+		threadID, err := m.getThreadID(refMsgID)
+		if err != nil {
+			log.Printf("[votingthreads] failed to lookup thread for reply: %v", err)
+			// fallthrough: if lookup fails, we won't delete to avoid false positives
+		} else if threadID != "" {
+			// Delete the reply in-channel
+			_ = s.ChannelMessageDelete(e.ChannelID, e.ID)
+
+			// Try to DM the user telling them to use the thread instead.
+			dm, err := s.UserChannelCreate(e.Author.ID)
+			if err != nil {
+				log.Printf("[votingthreads] failed to create DM channel for %s: %v", e.Author.ID, err)
+				return
+			}
+
+			// Mention the thread channel so the user can click it (<#threadID>). 
+			msg := "Replies are not allowed in this channel. Please discuss in the thread for that message: <#" + threadID + ">"
+			_, _ = s.ChannelMessageSend(dm.ID, msg) // ignore errors; user may have DMs closed
+
+			return
+		}
+	}
+
 	// React 👍 👎
 	_ = s.MessageReactionAdd(e.ChannelID, e.ID, "👍")
 	_ = s.MessageReactionAdd(e.ChannelID, e.ID, "👎")
@@ -108,11 +136,11 @@ func (m *Module) onMessageDeleteBulk(s *discordgo.Session, e *discordgo.MessageD
 
 func (m *Module) getThreadID(messageID string) (string, error) {
 	var threadID string
-	err := m.db.QueryRow(`SELECT thread_id FROM voting_threads WHERE message_id = ?`, messageID).Scan(&threadID)
-	if err == sql.ErrNoRows {
+	e := m.db.QueryRow(`SELECT thread_id FROM voting_threads WHERE message_id = ?`, messageID).Scan(&threadID)
+	if e == sql.ErrNoRows {
 		return "", nil
 	}
-	return threadID, err
+	return threadID, e
 }
 
 func makeThreadName(content string) string {
