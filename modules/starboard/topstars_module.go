@@ -125,7 +125,7 @@ func (m *TopStarsModule) onInteractionCreate(s *discordgo.Session, i *discordgo.
 			return
 		}
 
-		content, embed, comps, err := m.buildTopStarsPage(s, i, kind, ownerID, 0)
+		content, embed, comps, err := m.buildTopStarsPage(i.GuildID, kind, ownerID, 0)
 		if err != nil {
 			respondEphemeral(s, i, "DB error reading topstars.")
 			return
@@ -220,10 +220,10 @@ func (m *TopStarsModule) handleTopStarsComponent(s *discordgo.Session, i *discor
 	// Fast ACK to avoid timeouts
 	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseUpdateMessage,
-		Data: &discordgo.InteractionResponseData{Components: loadingButtons()},
+		Data: &discordgo.InteractionResponseData{Components: topstarsLoadingButtons()},
 	})
 
-	rowsUsers, rowsPosts, note, err := m.getTopStarsRows(i.GuildID, kind)
+	users, posts, note, err := m.getTopStarsRows(i.GuildID, kind)
 	if err != nil {
 		msg := "DB error reading topstars."
 		_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -235,9 +235,9 @@ func (m *TopStarsModule) handleTopStarsComponent(s *discordgo.Session, i *discor
 
 	total := 0
 	if kind == "posts" {
-		total = len(rowsPosts)
+		total = len(posts)
 	} else {
-		total = len(rowsUsers)
+		total = len(users)
 	}
 	if total == 0 {
 		msg := "No starboard posts recorded yet."
@@ -263,14 +263,14 @@ func (m *TopStarsModule) handleTopStarsComponent(s *discordgo.Session, i *discor
 	case "me":
 		// jump to the page containing the invoker
 		if kind == "posts" {
-			for idx, r := range rowsPosts {
+			for idx, r := range posts {
 				if r.AuthorID == ownerID {
 					targetPage = idx / tsPageSize
 					break
 				}
 			}
 		} else {
-			for idx, r := range rowsUsers {
+			for idx, r := range users {
 				if r.AuthorID == ownerID {
 					targetPage = idx / tsPageSize
 					break
@@ -286,7 +286,7 @@ func (m *TopStarsModule) handleTopStarsComponent(s *discordgo.Session, i *discor
 		targetPage = maxPage
 	}
 
-	content, embed, comps := m.buildTopStarsPageFromRows(i.GuildID, kind, ownerID, targetPage, rowsUsers, rowsPosts, note)
+	content, embed, comps := m.buildTopStarsPageFromRows(i.GuildID, kind, ownerID, targetPage, users, posts, note)
 	_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Content:    &content,
 		Embeds:     &[]*discordgo.MessageEmbed{embed},
@@ -294,7 +294,7 @@ func (m *TopStarsModule) handleTopStarsComponent(s *discordgo.Session, i *discor
 	})
 }
 
-func loadingButtons() []discordgo.MessageComponent {
+func topstarsLoadingButtons() []discordgo.MessageComponent {
 	return []discordgo.MessageComponent{
 		discordgo.ActionsRow{Components: []discordgo.MessageComponent{
 			discordgo.Button{Style: discordgo.SecondaryButton, Label: "Loading…", CustomID: "ts_loading", Disabled: true},
@@ -334,8 +334,8 @@ type topPostRow struct {
 	OriginalMessageID string
 }
 
-func (m *TopStarsModule) buildTopStarsPage(s *discordgo.Session, i *discordgo.InteractionCreate, kind, ownerID string, page int) (string, *discordgo.MessageEmbed, []discordgo.MessageComponent, error) {
-	users, posts, note, err := m.getTopStarsRows(i.GuildID, kind)
+func (m *TopStarsModule) buildTopStarsPage(guildID, kind, ownerID string, page int) (string, *discordgo.MessageEmbed, []discordgo.MessageComponent, error) {
+	users, posts, note, err := m.getTopStarsRows(guildID, kind)
 	if err != nil {
 		return "", nil, nil, err
 	}
@@ -345,7 +345,10 @@ func (m *TopStarsModule) buildTopStarsPage(s *discordgo.Session, i *discordgo.In
 	if kind != "posts" && len(users) == 0 {
 		return "", nil, nil, nil
 	}
-	return m.buildTopStarsPageFromRows(i.GuildID, kind, ownerID, page, users, posts, note), nil
+
+	// ✅ FIX: unpack the 3 return values
+	content, embed, comps := m.buildTopStarsPageFromRows(guildID, kind, ownerID, page, users, posts, note)
+	return content, embed, comps, nil
 }
 
 func (m *TopStarsModule) buildTopStarsPageFromRows(guildID, kind, ownerID string, page int, users []topUserRow, posts []topPostRow, note string) (string, *discordgo.MessageEmbed, []discordgo.MessageComponent) {
@@ -462,15 +465,4 @@ func (m *TopStarsModule) queryAllTopPosts() ([]topPostRow, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
-}
-
-/* =========================
-   Small helpers (same as levelling pattern)
-   ========================= */
-
-func respond(s *discordgo.Session, i *discordgo.InteractionCreate, msg string) {
-	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{Content: msg},
-	})
 }
