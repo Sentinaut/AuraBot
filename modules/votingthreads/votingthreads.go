@@ -49,8 +49,11 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 
 	// If this message is a reply to another message, block it and DM the author.
 	// This enforces "no replies in the channel — use the generated thread".
-	if e.Message.Reference != nil && e.Message.Reference.MessageID != "" {
-		refMsgID := e.Message.Reference.MessageID
+	//
+	// NOTE: In newer discordgo versions, Reference is a METHOD: e.Message.Reference()
+	ref := e.Message.Reference()
+	if ref != nil && ref.MessageID != "" {
+		refMsgID := ref.MessageID
 
 		threadID, err := m.getThreadID(refMsgID)
 		if err != nil {
@@ -67,7 +70,7 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 				return
 			}
 
-			// Mention the thread channel so the user can click it (<#threadID>). 
+			// Mention the thread channel so the user can click it (<#threadID>).
 			msg := "Replies are not allowed in this channel. Please discuss in the thread for that message: <#" + threadID + ">"
 			_, _ = s.ChannelMessageSend(dm.ID, msg) // ignore errors; user may have DMs closed
 
