@@ -24,8 +24,10 @@ const (
 	ChannelAutoStar = "1452584331917787216" // #ingame-pics
 
 	// 👋 Welcoming
-	ChannelWelcome = "1452582377858535644" // #welcome
-	AutoRoleID     = "1424750509683904615" // Members
+	ChannelWelcome    = "1452582377858535644" // #welcome
+	ChannelOnboarding = "1465095995066024031" // onboarding channel (no-role + staff)
+
+	AutoRoleID = "1424750509683904615" // Members (granted AFTER username confirmed)
 )
 
 // ⭐ Channels that count toward starboard (manual stars)
@@ -80,7 +82,7 @@ func main() {
 	}
 	for _, ch := range StarChannels {
 		starRules[ch] = starboard.ChannelRule{
-			AutoReact: false,
+			AutoReact:  false,
 			Threshold: 5,
 		}
 	}
@@ -111,8 +113,9 @@ func main() {
 			database.DB,
 		),
 
-		// 👋 Welcoming
-		welcoming.New(ChannelWelcome, AutoRoleID),
+		// 👋 Welcoming (+ onboarding username thread)
+		// Member role is granted only after username confirmed.
+		welcoming.New(ChannelWelcome, ChannelOnboarding, AutoRoleID),
 	})
 	if err != nil {
 		log.Fatal(err)
