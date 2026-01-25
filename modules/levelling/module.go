@@ -71,7 +71,7 @@ func (m *Module) Register(s *discordgo.Session) error {
 	s.AddHandler(m.onReady)
 	s.AddHandler(m.onInteractionCreate)
 	s.AddHandler(m.onMessageCreate)
-	s.AddHandler(m.onGuildMemberAdd)
+	s.AddHandler(m.onGuildMemberAdd) // ✅ needed for join tracking
 	return nil
 }
 
