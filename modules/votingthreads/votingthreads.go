@@ -49,7 +49,7 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 	}
 
 	// If this message is a reply, block it.
-	// NOTE: In newer discordgo versions, Reference is a METHOD: e.Message.Reference()
+	// NOTE: In newer discordgo versions, Reference is a METHOD.
 	if ref := e.Message.Reference(); ref != nil && strings.TrimSpace(ref.MessageID) != "" {
 		m.handleBlockedReply(s, e, ref.MessageID)
 		return
@@ -79,49 +79,27 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 }
 
 func (m *Module) handleBlockedReply(s *discordgo.Session, e *discordgo.MessageCreate, repliedToMessageID string) {
-	// This is the exact wording you requested:
-	privateText := "Please reply within the thread generated for that suggestion instead of replying to this message."
+	noticeText := "Please reply within the thread generated for that suggestion instead of replying to this message."
 
-	// Try to include the thread mention if we can find it
-	threadID := ""
-	if repliedToMessageID != "" {
-		if tid, err := m.getThreadID(repliedToMessageID); err != nil {
-			log.Printf("[votingthreads] failed to lookup thread for replied msg=%s: %v", repliedToMessageID, err)
-		} else {
-			threadID = tid
-		}
-	}
-
-	// Delete the reply in-channel
+	// Delete the reply itself
 	if err := s.ChannelMessageDelete(e.ChannelID, e.ID); err != nil {
-		log.Printf("[votingthreads] failed to delete reply msg=%s channel=%s: %v", e.ID, e.ChannelID, err)
-		// Still continue: user still needs guidance.
+		log.Printf("[votingthreads] failed to delete reply msg=%s: %v", e.ID, err)
 	}
 
-	// Prefer "private" delivery: DM is the closest thing to ephemeral in message events.
-	dmText := privateText
-	if threadID != "" {
-		dmText += " Use: <#" + threadID + ">"
-	}
-
-	// Attempt DM
-	if dm, err := s.UserChannelCreate(e.Author.ID); err == nil && dm != nil {
-		if _, sendErr := s.ChannelMessageSend(dm.ID, dmText); sendErr == nil {
-			return
-		}
-	}
-
-	// If DMs are closed, fallback: short-lived in-channel notice (auto-delete)
-	fallback := "<@" + e.Author.ID + "> " + dmText
-	notice, err := s.ChannelMessageSend(e.ChannelID, fallback)
-	if err != nil || notice == nil {
+	// Post a visible notice mentioning the user
+	msg, err := s.ChannelMessageSend(
+		e.ChannelID,
+		"<@"+e.Author.ID+"> "+noticeText,
+	)
+	if err != nil || msg == nil {
 		return
 	}
 
-	go func(chID, msgID string) {
-		time.Sleep(8 * time.Second)
-		_ = s.ChannelMessageDelete(chID, msgID)
-	}(e.ChannelID, notice.ID)
+	// Auto-delete the notice after 5 seconds
+	go func(channelID, messageID string) {
+		time.Sleep(5 * time.Second)
+		_ = s.ChannelMessageDelete(channelID, messageID)
+	}(e.ChannelID, msg.ID)
 }
 
 func (m *Module) onMessageDelete(s *discordgo.Session, e *discordgo.MessageDelete) {
@@ -161,7 +139,10 @@ func (m *Module) onMessageDeleteBulk(s *discordgo.Session, e *discordgo.MessageD
 
 func (m *Module) getThreadID(messageID string) (string, error) {
 	var threadID string
-	err := m.db.QueryRow(`SELECT thread_id FROM voting_threads WHERE message_id = ?`, messageID).Scan(&threadID)
+	err := m.db.QueryRow(
+		`SELECT thread_id FROM voting_threads WHERE message_id = ?`,
+		messageID,
+	).Scan(&threadID)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
