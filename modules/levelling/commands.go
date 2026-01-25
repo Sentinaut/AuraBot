@@ -33,7 +33,6 @@ func (m *Module) onReady(s *discordgo.Session, r *discordgo.Ready) {
 			Name:        "leaderboard",
 			Description: "Show the top XP users",
 		},
-
 		{
 			Name:        "joins",
 			Description: "List members who joined recently",
@@ -78,7 +77,6 @@ func (m *Module) onReady(s *discordgo.Session, r *discordgo.Ready) {
 				},
 			},
 		},
-
 		{
 			Name:        "levelupmsgset",
 			Description: "Admin: set the message for a user's level-up (backfill older levels)",
@@ -104,7 +102,6 @@ func (m *Module) onReady(s *discordgo.Session, r *discordgo.Ready) {
 				},
 			},
 		},
-
 		{
 			Name:        "levelupmsgdelete",
 			Description: "Admin: delete a saved level-up message from the database",
@@ -124,7 +121,6 @@ func (m *Module) onReady(s *discordgo.Session, r *discordgo.Ready) {
 				},
 			},
 		},
-
 		{
 			Name:        "milestonesync",
 			Description: "Admin: backfill milestone roles based on current XP (stack roles; no removals)",
