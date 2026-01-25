@@ -14,22 +14,6 @@ type joinRow struct {
 }
 
 /* =========================
-   Schema
-   ========================= */
-
-func (m *Module) ensureJoinsTable() error {
-	_, err := m.db.Exec(`
-		CREATE TABLE IF NOT EXISTS user_joins (
-			user_id   TEXT PRIMARY KEY,
-			username  TEXT NOT NULL,
-			joined_at INTEGER NOT NULL
-		);
-		CREATE INDEX IF NOT EXISTS idx_user_joins_joined_at ON user_joins(joined_at);
-	`)
-	return err
-}
-
-/* =========================
    XP
    ========================= */
 
