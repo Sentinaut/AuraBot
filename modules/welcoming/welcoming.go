@@ -187,7 +187,7 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 		Embeds:     []*discordgo.MessageEmbed{embed},
 		Components: components,
 		AllowedMentions: &discordgo.MessageAllowedMentions{
-			Parse: []string{},
+			Parse: []discordgo.AllowedMentionType{}, // ✅ FIXED TYPE
 		},
 	})
 	if err != nil {
@@ -294,7 +294,6 @@ func disableAllButtons(rows []discordgo.MessageComponent) []discordgo.MessageCom
 	for _, row := range rows {
 		ar, ok := row.(discordgo.ActionsRow)
 		if !ok {
-			// Some versions store pointer types; handle that too
 			if ptr, ok2 := row.(*discordgo.ActionsRow); ok2 && ptr != nil {
 				ar = *ptr
 				ok = true
