@@ -1,6 +1,10 @@
 package levelling
 
-import "github.com/bwmarrin/discordgo"
+import (
+	"strings"
+
+	"github.com/bwmarrin/discordgo"
+)
 
 func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if i == nil || i.Interaction == nil {
@@ -30,7 +34,15 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 		}
 
 	case discordgo.InteractionMessageComponent:
-		m.handleLeaderboardComponent(s, i)
+		cid := i.MessageComponentData().CustomID
+		if strings.HasPrefix(cid, "lb:") {
+			m.handleLeaderboardComponent(s, i)
+			return
+		}
+		if strings.HasPrefix(cid, "jn:") {
+			m.handleJoinsComponent(s, i)
+			return
+		}
 	}
 }
 
