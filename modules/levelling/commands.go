@@ -51,23 +51,23 @@ func (m *Module) onReady(s *discordgo.Session, r *discordgo.Ready) {
 			},
 		},
 
-		// /levelupmsg option order: user → level → visible
+		// ✅ REQUIRED options must come first
 		{
 			Name:        "levelupmsg",
 			Description: "Show the message that caused a user to level up",
 			Options: []*discordgo.ApplicationCommandOption{
-				{
-					Type:        discordgo.ApplicationCommandOptionUser,
-					Name:        "user",
-					Description: "User to look up (defaults to you)",
-					Required:    false,
-				},
 				{
 					Type:        discordgo.ApplicationCommandOptionInteger,
 					Name:        "level",
 					Description: "Level number to show (e.g. 5)",
 					Required:    true,
 					MinValue:    float64Ptr(1),
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionUser,
+					Name:        "user",
+					Description: "User to look up (defaults to you)",
+					Required:    false,
 				},
 				{
 					Type:        discordgo.ApplicationCommandOptionBoolean,
@@ -77,6 +77,7 @@ func (m *Module) onReady(s *discordgo.Session, r *discordgo.Ready) {
 				},
 			},
 		},
+
 		{
 			Name:        "levelupmsgset",
 			Description: "Admin: set the message for a user's level-up (backfill older levels)",
@@ -102,6 +103,7 @@ func (m *Module) onReady(s *discordgo.Session, r *discordgo.Ready) {
 				},
 			},
 		},
+
 		{
 			Name:        "levelupmsgdelete",
 			Description: "Admin: delete a saved level-up message from the database",
@@ -121,6 +123,7 @@ func (m *Module) onReady(s *discordgo.Session, r *discordgo.Ready) {
 				},
 			},
 		},
+
 		{
 			Name:        "milestonesync",
 			Description: "Admin: backfill milestone roles based on current XP (stack roles; no removals)",
