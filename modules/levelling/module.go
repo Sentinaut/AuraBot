@@ -14,6 +14,13 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
+type memberCache struct {
+	mu      sync.Mutex
+	guildID string
+	fetched time.Time
+	ids     map[string]struct{}
+}
+
 type Module struct {
 	db *sql.DB
 
@@ -30,6 +37,9 @@ type Module struct {
 
 	// Milestone roles (loaded from env)
 	levelRoles map[int]string
+
+	// Cached guild member IDs (used to filter leaderboards to current members)
+	members memberCache
 
 	rngMu sync.Mutex
 	rng   *rand.Rand
@@ -61,10 +71,13 @@ func (m *Module) Register(s *discordgo.Session) error {
 	s.AddHandler(m.onReady)
 	s.AddHandler(m.onInteractionCreate)
 	s.AddHandler(m.onMessageCreate)
+	s.AddHandler(m.onGuildMemberAdd)
 	return nil
 }
 
 func (m *Module) Start(ctx context.Context, s *discordgo.Session) error {
+	// NOTE: DB schema (including user_joins) is handled by internal/db/migrate.go
+
 	m.rngMu.Lock()
 	m.rng = rand.New(rand.NewSource(time.Now().UnixNano()))
 	m.rngMu.Unlock()
