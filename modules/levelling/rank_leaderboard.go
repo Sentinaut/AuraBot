@@ -111,6 +111,10 @@ func progressBar(pct int, segments int) string {
 	return b.String()
 }
 
+/* =========================
+   /leaderboard (filtered to current members)
+   ========================= */
+
 func (m *Module) handleLeaderboard(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if strings.TrimSpace(i.GuildID) == "" {
 		m.respondEphemeral(s, i, "This command only works in a server.")
@@ -122,7 +126,7 @@ func (m *Module) handleLeaderboard(s *discordgo.Session, i *discordgo.Interactio
 		return
 	}
 
-	content, embed, components, err := m.buildLeaderboardPage(i.GuildID, ownerID, 0)
+	content, embed, components, err := m.buildLeaderboardPageFiltered(s, i.GuildID, ownerID, 0)
 	if err != nil {
 		m.respondEphemeral(s, i, "DB error reading leaderboard.")
 		return
@@ -192,8 +196,16 @@ func (m *Module) handleLeaderboardComponent(s *discordgo.Session, i *discordgo.I
 		Data: &discordgo.InteractionResponseData{Components: m.loadingButtons()},
 	})
 
-	total, err := m.countXPUsers(guildID)
-	if err != nil || total <= 0 {
+	allRows, note, err := m.getLeaderboardRowsFiltered(s, guildID)
+	if err != nil {
+		msg := "DB error reading leaderboard."
+		_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content:    &msg,
+			Components: &[]discordgo.MessageComponent{},
+		})
+		return
+	}
+	if len(allRows) == 0 {
 		msg := "No XP recorded yet."
 		_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 			Content:    &msg,
@@ -201,6 +213,8 @@ func (m *Module) handleLeaderboardComponent(s *discordgo.Session, i *discordgo.I
 		})
 		return
 	}
+
+	total := len(allRows)
 	maxPage := (total - 1) / lbPageSize
 
 	targetPage := currentPage
@@ -214,11 +228,11 @@ func (m *Module) handleLeaderboardComponent(s *discordgo.Session, i *discordgo.I
 	case "last":
 		targetPage = maxPage
 	case "me":
-		myXP, err := m.getUserXP(guildID, ownerID)
-		if err == nil && myXP > 0 {
-			pos, err := m.getRankPosition(guildID, myXP)
-			if err == nil && pos > 0 {
-				targetPage = int((pos - 1) / lbPageSize)
+		// find owner's rank within the filtered leaderboard
+		for idx, r := range allRows {
+			if r.UserID == ownerID {
+				targetPage = idx / lbPageSize
+				break
 			}
 		}
 	}
@@ -230,16 +244,7 @@ func (m *Module) handleLeaderboardComponent(s *discordgo.Session, i *discordgo.I
 		targetPage = maxPage
 	}
 
-	content, embed, comps, err := m.buildLeaderboardPageWithTotal(guildID, ownerID, targetPage, total)
-	if err != nil {
-		msg := "DB error reading leaderboard."
-		_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content:    &msg,
-			Components: &[]discordgo.MessageComponent{},
-		})
-		return
-	}
-
+	content, embed, comps := buildLeaderboardPageFromRows(allRows, note, ownerID, targetPage)
 	_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Content:    &content,
 		Embeds:     &[]*discordgo.MessageEmbed{embed},
@@ -250,18 +255,46 @@ func (m *Module) handleLeaderboardComponent(s *discordgo.Session, i *discordgo.I
 	}
 }
 
-func (m *Module) buildLeaderboardPage(guildID, ownerID string, page int) (string, *discordgo.MessageEmbed, []discordgo.MessageComponent, error) {
-	total, err := m.countXPUsers(guildID)
+func (m *Module) buildLeaderboardPageFiltered(s *discordgo.Session, guildID, ownerID string, page int) (string, *discordgo.MessageEmbed, []discordgo.MessageComponent, error) {
+	rows, note, err := m.getLeaderboardRowsFiltered(s, guildID)
 	if err != nil {
 		return "", nil, nil, err
 	}
-	if total <= 0 {
+	if len(rows) == 0 {
 		return "", nil, nil, nil
 	}
-	return m.buildLeaderboardPageWithTotal(guildID, ownerID, page, total)
+
+	content, embed, comps := buildLeaderboardPageFromRows(rows, note, ownerID, page)
+	return content, embed, comps, nil
 }
 
-func (m *Module) buildLeaderboardPageWithTotal(guildID, ownerID string, page int, total int) (string, *discordgo.MessageEmbed, []discordgo.MessageComponent, error) {
+func (m *Module) getLeaderboardRowsFiltered(s *discordgo.Session, guildID string) ([]xpRow, string, error) {
+	all, err := m.listAllXPUsers(0)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(all) == 0 {
+		return nil, "", nil
+	}
+
+	memberSet, err := m.getGuildMemberIDSet(s, guildID)
+	if err != nil || memberSet == nil {
+		// Fallback: still show a leaderboard, just not filtered.
+		return all, "⚠️ Couldn't fetch the server member list, so this is the all-time leaderboard.", nil
+	}
+
+	filtered := make([]xpRow, 0, len(all))
+	for _, r := range all {
+		if _, ok := memberSet[r.UserID]; ok {
+			filtered = append(filtered, r)
+		}
+	}
+
+	return filtered, "", nil
+}
+
+func buildLeaderboardPageFromRows(allRows []xpRow, note string, ownerID string, page int) (string, *discordgo.MessageEmbed, []discordgo.MessageComponent) {
+	total := len(allRows)
 	maxPage := (total - 1) / lbPageSize
 	if page < 0 {
 		page = 0
@@ -271,10 +304,11 @@ func (m *Module) buildLeaderboardPageWithTotal(guildID, ownerID string, page int
 	}
 
 	offset := page * lbPageSize
-	rows, err := m.queryTopXPPage(guildID, lbPageSize, offset)
-	if err != nil {
-		return "", nil, nil, err
+	end := offset + lbPageSize
+	if end > total {
+		end = total
 	}
+	rows := allRows[offset:end]
 
 	startRank := offset + 1
 	endRank := offset + len(rows)
@@ -293,10 +327,13 @@ func (m *Module) buildLeaderboardPageWithTotal(guildID, ownerID string, page int
 		},
 	}
 
-	return "", embed, m.leaderboardButtons(ownerID, page, maxPage), nil
+	content := strings.TrimSpace(note)
+	comps := leaderboardButtons(ownerID, page, maxPage)
+
+	return content, embed, comps
 }
 
-func (m *Module) leaderboardButtons(ownerID string, page, maxPage int) []discordgo.MessageComponent {
+func leaderboardButtons(ownerID string, page, maxPage int) []discordgo.MessageComponent {
 	makeID := func(action string) string {
 		return fmt.Sprintf("%s:%s:%s:%d", lbCustomID, ownerID, action, page)
 	}
