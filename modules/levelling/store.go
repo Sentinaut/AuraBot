@@ -7,6 +7,32 @@ type xpRow struct {
 	XP     int64
 }
 
+type joinRow struct {
+	UserID   string
+	Username string
+	JoinedAt int64
+}
+
+/* =========================
+   Schema
+   ========================= */
+
+func (m *Module) ensureJoinsTable() error {
+	_, err := m.db.Exec(`
+		CREATE TABLE IF NOT EXISTS user_joins (
+			user_id   TEXT PRIMARY KEY,
+			username  TEXT NOT NULL,
+			joined_at INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_user_joins_joined_at ON user_joins(joined_at);
+	`)
+	return err
+}
+
+/* =========================
+   XP
+   ========================= */
+
 func (m *Module) txGetUserXPAndLast(tx *sql.Tx, userID string) (xp int64, lastXPAt int64, err error) {
 	err = tx.QueryRow(`SELECT xp, last_xp_at FROM user_xp WHERE user_id = ?`, userID).Scan(&xp, &lastXPAt)
 	if err == sql.ErrNoRows {
@@ -127,6 +153,54 @@ func (m *Module) getRankPosition(guildID string, xp int64) (int64, error) {
 	}
 	return n + 1, nil
 }
+
+/* =========================
+   Joins
+   ========================= */
+
+func (m *Module) upsertUserJoin(userID, username string, joinedAt int64) error {
+	_, err := m.db.Exec(
+		`INSERT INTO user_joins(user_id, username, joined_at)
+		 VALUES(?,?,?)
+		 ON CONFLICT(user_id) DO UPDATE SET
+		   username = excluded.username,
+		   joined_at = excluded.joined_at`,
+		userID, username, joinedAt,
+	)
+	return err
+}
+
+func (m *Module) listJoinsBetween(startUnix, endUnix int64, limit int) ([]joinRow, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := m.db.Query(
+		`SELECT user_id, username, joined_at
+		 FROM user_joins
+		 WHERE joined_at >= ? AND joined_at < ?
+		 ORDER BY joined_at DESC
+		 LIMIT ?`,
+		startUnix, endUnix, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]joinRow, 0, limit)
+	for rows.Next() {
+		var r joinRow
+		if err := rows.Scan(&r.UserID, &r.Username, &r.JoinedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+/* =========================
+   Level-up messages + XP curve
+   ========================= */
 
 // Save (or overwrite) the saved message for a user's specific level.
 func (m *Module) saveLevelUpMessage(userID, username string, level int, channelID, messageID, content string, createdAt int64) error {
