@@ -44,14 +44,22 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 	if e == nil || e.Message == nil || e.Author == nil || e.Author.Bot {
 		return
 	}
+
+	// Only act in voting channels
 	if _, ok := m.allowedChannels[e.ChannelID]; !ok {
 		return
 	}
 
-	// If this message is a reply, block it.
-	// NOTE: In newer discordgo versions, Reference is a METHOD.
-	if ref := e.Message.Reference(); ref != nil && strings.TrimSpace(ref.MessageID) != "" {
-		m.handleBlockedReply(s, e, ref.MessageID)
+	// Safety: ignore any message already inside a thread
+	if strings.TrimSpace(e.Message.ThreadID) != "" {
+		return
+	}
+
+	// ✅ Correct rule:
+	// - If it's a reply -> delete it + short notice
+	// - If it's NOT a reply -> NEVER delete (create voting thread + reactions)
+	if e.Message.Type == discordgo.MessageTypeReply {
+		m.handleBlockedReply(s, e)
 		return
 	}
 
@@ -78,7 +86,7 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 	}
 }
 
-func (m *Module) handleBlockedReply(s *discordgo.Session, e *discordgo.MessageCreate, repliedToMessageID string) {
+func (m *Module) handleBlockedReply(s *discordgo.Session, e *discordgo.MessageCreate) {
 	noticeText := "Please reply within the thread generated for that suggestion instead of replying to this message."
 
 	// Delete the reply itself
