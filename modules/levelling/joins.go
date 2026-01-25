@@ -115,7 +115,7 @@ func (m *Module) handleJoinsComponent(s *discordgo.Session, i *discordgo.Interac
 	// Fast ACK
 	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseUpdateMessage,
-		Data: &discordgo.InteractionResponseData{Components: m.loadingButtons()},
+		Data: &discordgo.InteractionResponseData{Components: m.joinsLoadingButtons()},
 	})
 
 	// Load all rows for this range (cap to 1000 so the bot can't be forced into huge responses)
@@ -150,14 +150,6 @@ func (m *Module) handleJoinsComponent(s *discordgo.Session, i *discordgo.Interac
 		targetPage = page + 1
 	case "last":
 		targetPage = maxPage
-	case "me":
-		// Jump to the page where the invoker appears (if present)
-		for idx, r := range rows {
-			if r.UserID == ownerID {
-				targetPage = idx / jnPageSize
-				break
-			}
-		}
 	}
 
 	if targetPage < 0 {
@@ -258,7 +250,6 @@ func joinsButtons(ownerID, rangeOpt string, page, maxPage int) []discordgo.Messa
 		Components: []discordgo.MessageComponent{
 			discordgo.Button{Style: discordgo.PrimaryButton, Label: "⏮️", CustomID: makeID("top"), Disabled: page == 0},
 			discordgo.Button{Style: discordgo.SecondaryButton, Label: "⬅️", CustomID: makeID("prev"), Disabled: page == 0},
-			discordgo.Button{Style: discordgo.SecondaryButton, Label: "🚹", CustomID: makeID("me")},
 			discordgo.Button{Style: discordgo.SecondaryButton, Label: "➡️", CustomID: makeID("next"), Disabled: page >= maxPage},
 			discordgo.Button{Style: discordgo.PrimaryButton, Label: "⏭️", CustomID: makeID("last"), Disabled: page >= maxPage},
 		},
@@ -266,7 +257,8 @@ func joinsButtons(ownerID, rangeOpt string, page, maxPage int) []discordgo.Messa
 	return []discordgo.MessageComponent{row}
 }
 
-func (m *Module) loadingButtons() []discordgo.MessageComponent {
+// renamed to avoid colliding with rank_leaderboard.go's loadingButtons()
+func (m *Module) joinsLoadingButtons() []discordgo.MessageComponent {
 	return []discordgo.MessageComponent{
 		discordgo.ActionsRow{Components: []discordgo.MessageComponent{
 			discordgo.Button{Style: discordgo.SecondaryButton, Label: "Loading…", CustomID: "jn_loading", Disabled: true},
