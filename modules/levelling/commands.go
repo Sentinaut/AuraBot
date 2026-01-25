@@ -34,6 +34,24 @@ func (m *Module) onReady(s *discordgo.Session, r *discordgo.Ready) {
 			Description: "Show the top XP users",
 		},
 
+		{
+			Name:        "joins",
+			Description: "List members who joined recently",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "range",
+					Description: "Time range",
+					Required:    true,
+					Choices: []*discordgo.ApplicationCommandOptionChoice{
+						{Name: "daily", Value: "daily"},
+						{Name: "weekly", Value: "weekly"},
+						{Name: "monthly", Value: "monthly"},
+					},
+				},
+			},
+		},
+
 		// /levelupmsg option order: user → level → visible
 		{
 			Name:        "levelupmsg",
@@ -87,7 +105,6 @@ func (m *Module) onReady(s *discordgo.Session, r *discordgo.Ready) {
 			},
 		},
 
-		// ✅ NEW COMMAND
 		{
 			Name:        "levelupmsgdelete",
 			Description: "Admin: delete a saved level-up message from the database",
@@ -145,6 +162,7 @@ func (m *Module) onReady(s *discordgo.Session, r *discordgo.Ready) {
 	for _, name := range []string{
 		"rank",
 		"leaderboard",
+		"joins",
 		"levelupmsg",
 		"levelupmsgset",
 		"levelupmsgdelete",
@@ -160,6 +178,7 @@ func (m *Module) onReady(s *discordgo.Session, r *discordgo.Ready) {
 		_ = m.deleteGlobalDuplicatesOnce(s, appID, map[string]struct{}{
 			"rank":             {},
 			"leaderboard":      {},
+			"joins":            {},
 			"levelupmsg":       {},
 			"levelupmsgset":    {},
 			"levelupmsgdelete": {},
