@@ -17,6 +17,8 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 			m.handleLeaderboard(s, i)
 		case "joins":
 			m.handleJoins(s, i)
+		case "joinsbackfill":
+			m.handleJoinsBackfill(s, i)
 		case "levelupmsg":
 			m.handleLevelUpMsg(s, i)
 		case "levelupmsgset":
