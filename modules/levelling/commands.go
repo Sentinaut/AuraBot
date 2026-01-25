@@ -51,7 +51,28 @@ func (m *Module) onReady(s *discordgo.Session, r *discordgo.Ready) {
 			},
 		},
 
-		// ✅ REQUIRED options must come first
+		// ✅ temp admin backfill
+		{
+			Name:        "joinsbackfill",
+			Description: "Admin: populate join timestamps for current members (writes to DB)",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:        discordgo.ApplicationCommandOptionInteger,
+					Name:        "limit",
+					Description: "Optional max members to process (0 = no limit)",
+					Required:    false,
+					MinValue:    float64Ptr(0),
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionBoolean,
+					Name:        "dry_run",
+					Description: "If true, does not write to DB",
+					Required:    false,
+				},
+			},
+		},
+
+		// REQUIRED options must come first
 		{
 			Name:        "levelupmsg",
 			Description: "Show the message that caused a user to level up",
@@ -162,6 +183,7 @@ func (m *Module) onReady(s *discordgo.Session, r *discordgo.Ready) {
 		"rank",
 		"leaderboard",
 		"joins",
+		"joinsbackfill",
 		"levelupmsg",
 		"levelupmsgset",
 		"levelupmsgdelete",
@@ -178,6 +200,7 @@ func (m *Module) onReady(s *discordgo.Session, r *discordgo.Ready) {
 			"rank":             {},
 			"leaderboard":      {},
 			"joins":            {},
+			"joinsbackfill":    {},
 			"levelupmsg":       {},
 			"levelupmsgset":    {},
 			"levelupmsgdelete": {},
