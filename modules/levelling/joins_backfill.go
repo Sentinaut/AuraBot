@@ -65,7 +65,7 @@ func (m *Module) handleJoinsBackfill(s *discordgo.Session, i *discordgo.Interact
 	processed := 0
 	written := 0
 	skippedBots := 0
-	parseFailures := 0
+	missingJoinTime := 0
 
 	after := ""
 	for {
@@ -95,28 +95,21 @@ func (m *Module) handleJoinsBackfill(s *discordgo.Session, i *discordgo.Interact
 				goto DONE
 			}
 
-			joinedUnix := time.Now().Unix()
-			// discordgo.Member.JoinedAt is typically an RFC3339 string.
-			if strings.TrimSpace(mem.JoinedAt) != "" {
-				if t, err := time.Parse(time.RFC3339, mem.JoinedAt); err == nil {
-					joinedUnix = t.Unix()
-				} else {
-					// Some payloads include fractional seconds; try RFC3339Nano.
-					if t2, err2 := time.Parse(time.RFC3339Nano, mem.JoinedAt); err2 == nil {
-						joinedUnix = t2.Unix()
-					} else {
-						parseFailures++
-					}
-				}
+			joinedUnix := int64(0)
+			// In your discordgo version JoinedAt is time.Time
+			if !mem.JoinedAt.IsZero() {
+				joinedUnix = mem.JoinedAt.Unix()
 			} else {
-				parseFailures++
+				missingJoinTime++
+				joinedUnix = time.Now().Unix()
 			}
 
-			if !dryRun {
-				if err := m.upsertUserJoin(mem.User.ID, mem.User.Username, joinedUnix); err == nil {
-					written++
-				}
-			} else {
+			if dryRun {
+				written++
+				continue
+			}
+
+			if err := m.upsertUserJoin(mem.User.ID, mem.User.Username, joinedUnix); err == nil {
 				written++
 			}
 		}
@@ -128,7 +121,7 @@ func (m *Module) handleJoinsBackfill(s *discordgo.Session, i *discordgo.Interact
 
 DONE:
 	out := fmt.Sprintf(
-		"✅ Joins backfill complete.\n\nProcessed: **%d**\nWritten: **%d**%s\nSkipped bots: **%d**\nJoin date parse failures: **%d**",
+		"✅ Joins backfill complete.\n\nProcessed: **%d**\nWritten: **%d**%s\nSkipped bots: **%d**\nMissing join timestamps: **%d**",
 		processed,
 		written,
 		func() string {
@@ -138,7 +131,7 @@ DONE:
 			return ""
 		}(),
 		skippedBots,
-		parseFailures,
+		missingJoinTime,
 	)
 
 	_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &out})
