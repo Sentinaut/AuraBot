@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -47,35 +48,11 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 		return
 	}
 
-	// If this message is a reply to another message, block it and DM the author.
-	// This enforces "no replies in the channel — use the generated thread".
-	//
+	// If this message is a reply, block it.
 	// NOTE: In newer discordgo versions, Reference is a METHOD: e.Message.Reference()
-	ref := e.Message.Reference()
-	if ref != nil && ref.MessageID != "" {
-		refMsgID := ref.MessageID
-
-		threadID, err := m.getThreadID(refMsgID)
-		if err != nil {
-			log.Printf("[votingthreads] failed to lookup thread for reply: %v", err)
-			// fallthrough: if lookup fails, we won't delete to avoid false positives
-		} else if threadID != "" {
-			// Delete the reply in-channel
-			_ = s.ChannelMessageDelete(e.ChannelID, e.ID)
-
-			// Try to DM the user telling them to use the thread instead.
-			dm, err := s.UserChannelCreate(e.Author.ID)
-			if err != nil {
-				log.Printf("[votingthreads] failed to create DM channel for %s: %v", e.Author.ID, err)
-				return
-			}
-
-			// Mention the thread channel so the user can click it (<#threadID>).
-			msg := "Replies are not allowed in this channel. Please discuss in the thread for that message: <#" + threadID + ">"
-			_, _ = s.ChannelMessageSend(dm.ID, msg) // ignore errors; user may have DMs closed
-
-			return
-		}
+	if ref := e.Message.Reference(); ref != nil && strings.TrimSpace(ref.MessageID) != "" {
+		m.handleBlockedReply(s, e, ref.MessageID)
+		return
 	}
 
 	// React 👍 👎
@@ -97,8 +74,54 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 		e.ID, e.ChannelID, thread.ID,
 	)
 	if err != nil {
-		log.Printf("[votingthreads] db insert failed: %v", err)
+		log.Printf("[votingthreads] db insert failed (msg=%s thread=%s): %v", e.ID, thread.ID, err)
 	}
+}
+
+func (m *Module) handleBlockedReply(s *discordgo.Session, e *discordgo.MessageCreate, repliedToMessageID string) {
+	// This is the exact wording you requested:
+	privateText := "Please reply within the thread generated for that suggestion instead of replying to this message."
+
+	// Try to include the thread mention if we can find it
+	threadID := ""
+	if repliedToMessageID != "" {
+		if tid, err := m.getThreadID(repliedToMessageID); err != nil {
+			log.Printf("[votingthreads] failed to lookup thread for replied msg=%s: %v", repliedToMessageID, err)
+		} else {
+			threadID = tid
+		}
+	}
+
+	// Delete the reply in-channel
+	if err := s.ChannelMessageDelete(e.ChannelID, e.ID); err != nil {
+		log.Printf("[votingthreads] failed to delete reply msg=%s channel=%s: %v", e.ID, e.ChannelID, err)
+		// Still continue: user still needs guidance.
+	}
+
+	// Prefer "private" delivery: DM is the closest thing to ephemeral in message events.
+	dmText := privateText
+	if threadID != "" {
+		dmText += " Use: <#" + threadID + ">"
+	}
+
+	// Attempt DM
+	if dm, err := s.UserChannelCreate(e.Author.ID); err == nil && dm != nil {
+		if _, sendErr := s.ChannelMessageSend(dm.ID, dmText); sendErr == nil {
+			return
+		}
+	}
+
+	// If DMs are closed, fallback: short-lived in-channel notice (auto-delete)
+	fallback := "<@" + e.Author.ID + "> " + dmText
+	notice, err := s.ChannelMessageSend(e.ChannelID, fallback)
+	if err != nil || notice == nil {
+		return
+	}
+
+	go func(chID, msgID string) {
+		time.Sleep(8 * time.Second)
+		_ = s.ChannelMessageDelete(chID, msgID)
+	}(e.ChannelID, notice.ID)
 }
 
 func (m *Module) onMessageDelete(s *discordgo.Session, e *discordgo.MessageDelete) {
@@ -115,7 +138,6 @@ func (m *Module) onMessageDelete(s *discordgo.Session, e *discordgo.MessageDelet
 	}
 
 	_, _ = s.ChannelDelete(threadID)
-
 	_, _ = m.db.Exec(`DELETE FROM voting_threads WHERE message_id = ?`, e.ID)
 }
 
@@ -139,11 +161,11 @@ func (m *Module) onMessageDeleteBulk(s *discordgo.Session, e *discordgo.MessageD
 
 func (m *Module) getThreadID(messageID string) (string, error) {
 	var threadID string
-	e := m.db.QueryRow(`SELECT thread_id FROM voting_threads WHERE message_id = ?`, messageID).Scan(&threadID)
-	if e == sql.ErrNoRows {
+	err := m.db.QueryRow(`SELECT thread_id FROM voting_threads WHERE message_id = ?`, messageID).Scan(&threadID)
+	if err == sql.ErrNoRows {
 		return "", nil
 	}
-	return threadID, e
+	return threadID, err
 }
 
 func makeThreadName(content string) string {
