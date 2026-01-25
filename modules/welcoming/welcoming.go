@@ -13,7 +13,7 @@ import (
 type Module struct {
 	welcomeChannelID    string
 	onboardingChannelID string
-	memberRoleID        string
+	memberRoleID        string // granted AFTER username confirmed
 
 	mu       sync.Mutex
 	sessions map[string]*onboardSession // key = userID
@@ -52,12 +52,11 @@ func (m *Module) onGuildMemberAdd(s *discordgo.Session, e *discordgo.GuildMember
 		return
 	}
 
-	// ───────────────── Welcome Embed (existing behaviour) ─────────────────
-
+	// ───────────── Welcome embed in #welcome ─────────────
 	if m.welcomeChannelID != "" {
-		count := 0
+		memberCount := 0
 		if g, err := s.State.Guild(e.GuildID); err == nil && g != nil {
-			count = g.MemberCount
+			memberCount = g.MemberCount
 		}
 
 		embed := &discordgo.MessageEmbed{
@@ -65,24 +64,31 @@ func (m *Module) onGuildMemberAdd(s *discordgo.Session, e *discordgo.GuildMember
 			Description: "Welcome <@" + e.User.ID + "> to **Aura**!\n\n" +
 				"React with 👋 to say hi",
 			Color: 0x9B59B6,
+			Thumbnail: &discordgo.MessageEmbedThumbnail{
+				URL: e.User.AvatarURL(""),
+			},
 			Footer: &discordgo.MessageEmbedFooter{
-				Text: "Member #" + itoa(count),
+				Text: "Member #" + itoa(memberCount),
 			},
 			Timestamp: time.Now().Format(time.RFC3339),
 		}
 
 		msg, err := s.ChannelMessageSendEmbed(m.welcomeChannelID, embed)
-		if err == nil {
-			_ = s.MessageReactionAdd(m.welcomeChannelID, msg.ID, "👋")
+		if err != nil {
+			log.Printf("[welcoming] failed to send welcome message: %v", err)
+		} else {
+			if err := s.MessageReactionAdd(m.welcomeChannelID, msg.ID, "👋"); err != nil {
+				log.Printf("[welcoming] failed to add wave reaction: %v", err)
+			}
 		}
 	}
 
-	// ───────────────── Onboarding Flow ─────────────────
-
+	// ───────────── Onboarding channel flow ─────────────
 	if m.onboardingChannelID == "" {
 		return
 	}
 
+	// Create parent message in onboarding channel
 	parent, err := s.ChannelMessageSend(
 		m.onboardingChannelID,
 		"Hey <@"+e.User.ID+">\n"+
@@ -93,6 +99,7 @@ func (m *Module) onGuildMemberAdd(s *discordgo.Session, e *discordgo.GuildMember
 		return
 	}
 
+	// Create thread for that message
 	thread, err := s.MessageThreadStartComplex(
 		m.onboardingChannelID,
 		parent.ID,
@@ -102,10 +109,11 @@ func (m *Module) onGuildMemberAdd(s *discordgo.Session, e *discordgo.GuildMember
 		},
 	)
 	if err != nil {
-		log.Printf("[welcoming] thread creation failed: %v", err)
+		log.Printf("[welcoming] onboarding thread failed: %v", err)
 		return
 	}
 
+	// Store session
 	m.mu.Lock()
 	m.sessions[e.User.ID] = &onboardSession{
 		GuildID:     e.GuildID,
@@ -119,14 +127,19 @@ func (m *Module) onGuildMemberAdd(s *discordgo.Session, e *discordgo.GuildMember
 }
 
 func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreate) {
-	if e.Author == nil || e.Author.Bot {
+	if e == nil || e.Author == nil || e.Author.Bot {
 		return
 	}
 
 	m.mu.Lock()
 	sess, ok := m.sessions[e.Author.ID]
 	m.mu.Unlock()
-	if !ok || e.ChannelID != sess.ThreadID {
+	if !ok || sess == nil {
+		return
+	}
+
+	// Only accept messages in the correct thread
+	if e.ChannelID != sess.ThreadID {
 		return
 	}
 
@@ -135,19 +148,21 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 		return
 	}
 
-	if strings.ContainsAny(text, " \t\n\r") {
-		_, _ = s.ChannelMessageSend(e.ChannelID,
-			"Your username cannot contain spaces, please try again\n\nPlease type in your username below",
-		)
+	// Any whitespace (space/tab/newline) is invalid
+	if strings.ContainsAny(text, " \t\r\n") {
+		_, _ = s.ChannelMessageSend(e.ChannelID, "Your username cannot contain spaces, please try again")
+		_, _ = s.ChannelMessageSend(e.ChannelID, "Please type in your username below")
 		return
 	}
 
+	// Save candidate name
 	m.mu.Lock()
 	sess.CandidateName = text
 	m.mu.Unlock()
 
+	// Confirmation embed + buttons
 	embed := &discordgo.MessageEmbed{
-		Description: "Your username is:\n\n**" + escapeMarkdown(text) + "**\n\nIs that correct?",
+		Description: "Your username is:\n**" + escapeMarkdown(text) + "**\n\nIs that correct?",
 		Color:       0x9B59B6,
 	}
 
@@ -168,13 +183,22 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 		},
 	}
 
-	_, _ = s.ChannelMessageSendComplex(e.ChannelID, &discordgo.MessageSend{
+	_, err := s.ChannelMessageSendComplex(e.ChannelID, &discordgo.MessageSend{
 		Embeds:     []*discordgo.MessageEmbed{embed},
 		Components: components,
+		AllowedMentions: &discordgo.MessageAllowedMentions{
+			Parse: []string{},
+		},
 	})
+	if err != nil {
+		log.Printf("[welcoming] failed to send confirm embed: %v", err)
+	}
 }
 
 func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if i == nil || i.Interaction == nil {
+		return
+	}
 	if i.Type != discordgo.InteractionMessageComponent {
 		return
 	}
@@ -188,7 +212,8 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 	action := parts[1]
 	userID := parts[2]
 
-	if i.Member == nil || i.Member.User.ID != userID {
+	// Only the target user can click
+	if i.Member == nil || i.Member.User == nil || i.Member.User.ID != userID {
 		_ = s.InteractionRespond(i.Interaction, ephemeral("Those buttons aren’t for you 🙂"))
 		return
 	}
@@ -201,16 +226,15 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 		return
 	}
 
-	// Disable buttons
+	// Disable buttons on the message they clicked
 	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseUpdateMessage,
 		Data: &discordgo.InteractionResponseData{
-			Components: disableButtons(i.Message.Components),
+			Components: disableAllButtons(i.Message.Components),
 		},
 	})
 
 	switch action {
-
 	case "no":
 		m.mu.Lock()
 		sess.CandidateName = ""
@@ -219,18 +243,33 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 		_, _ = s.ChannelMessageSend(sess.ThreadID, "Please type in your username below")
 
 	case "yes":
-		name := sess.CandidateName
+		m.mu.Lock()
+		name := strings.TrimSpace(sess.CandidateName)
+		m.mu.Unlock()
+
 		if name == "" {
 			_, _ = s.ChannelMessageSend(sess.ThreadID, "Please type in your username below")
 			return
 		}
 
-		_ = s.GuildMemberNickname(sess.GuildID, sess.UserID, name)
-		_ = s.GuildMemberRoleAdd(sess.GuildID, sess.UserID, m.memberRoleID)
+		// Set nickname (ignore error if perms missing)
+		if err := s.GuildMemberNickname(sess.GuildID, sess.UserID, name); err != nil {
+			log.Printf("[welcoming] failed to set nickname: %v", err)
+		}
 
-		// Delete parent message (kills thread)
-		_ = s.ChannelMessageDelete(m.onboardingChannelID, sess.ParentMsgID)
+		// Give member role
+		if m.memberRoleID != "" {
+			if err := s.GuildMemberRoleAdd(sess.GuildID, sess.UserID, m.memberRoleID); err != nil {
+				log.Printf("[welcoming] failed to add member role: %v", err)
+			}
+		}
 
+		// Delete parent message (deletes thread too)
+		if err := s.ChannelMessageDelete(m.onboardingChannelID, sess.ParentMsgID); err != nil {
+			log.Printf("[welcoming] failed to delete onboarding parent message: %v", err)
+		}
+
+		// End session
 		m.mu.Lock()
 		delete(m.sessions, sess.UserID)
 		m.mu.Unlock()
@@ -238,20 +277,6 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 }
 
 /* ───────────── Helpers ───────────── */
-
-func disableButtons(rows []discordgo.MessageComponent) []discordgo.MessageComponent {
-	var out []discordgo.MessageComponent
-	for _, r := range rows {
-		ar := discordgo.ActionsRow{}
-		for _, c := range r.(*discordgo.ActionsRow).Components {
-			b := c.(discordgo.Button)
-			b.Disabled = true
-			ar.Components = append(ar.Components, b)
-		}
-		out = append(out, ar)
-	}
-	return out
-}
 
 func ephemeral(msg string) *discordgo.InteractionResponse {
 	return &discordgo.InteractionResponse{
@@ -263,13 +288,52 @@ func ephemeral(msg string) *discordgo.InteractionResponse {
 	}
 }
 
+func disableAllButtons(rows []discordgo.MessageComponent) []discordgo.MessageComponent {
+	out := make([]discordgo.MessageComponent, 0, len(rows))
+
+	for _, row := range rows {
+		ar, ok := row.(discordgo.ActionsRow)
+		if !ok {
+			// Some versions store pointer types; handle that too
+			if ptr, ok2 := row.(*discordgo.ActionsRow); ok2 && ptr != nil {
+				ar = *ptr
+				ok = true
+			}
+		}
+		if !ok {
+			out = append(out, row)
+			continue
+		}
+
+		newRow := discordgo.ActionsRow{}
+		for _, comp := range ar.Components {
+			btn, ok := comp.(discordgo.Button)
+			if !ok {
+				if ptr, ok2 := comp.(*discordgo.Button); ok2 && ptr != nil {
+					btn = *ptr
+					ok = true
+				}
+			}
+			if ok {
+				btn.Disabled = true
+				newRow.Components = append(newRow.Components, btn)
+			} else {
+				newRow.Components = append(newRow.Components, comp)
+			}
+		}
+		out = append(out, newRow)
+	}
+
+	return out
+}
+
 func escapeMarkdown(s string) string {
-	replacer := strings.NewReplacer(
+	r := strings.NewReplacer(
 		"*", "\\*",
 		"_", "\\_",
 		"`", "\\`",
 	)
-	return replacer.Replace(s)
+	return r.Replace(s)
 }
 
 func safeThreadName(s string) string {
@@ -280,6 +344,16 @@ func safeThreadName(s string) string {
 	return s
 }
 
-func itoa(i int) string {
-	return strconv.Itoa(i)
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var b [20]byte
+	i := len(b)
+	for n > 0 {
+		i--
+		b[i] = byte('0' + (n % 10))
+		n /= 10
+	}
+	return string(b[i:])
 }
