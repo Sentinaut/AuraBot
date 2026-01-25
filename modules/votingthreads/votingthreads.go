@@ -50,14 +50,9 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 		return
 	}
 
-	// Safety: ignore any message already inside a thread
-	if strings.TrimSpace(e.Message.ThreadID) != "" {
-		return
-	}
-
-	// ✅ Correct rule:
-	// - If it's a reply -> delete it + short notice
-	// - If it's NOT a reply -> NEVER delete (create voting thread + reactions)
+	// ✅ Rule:
+	// - Replies get deleted (force thread usage)
+	// - Normal (non-reply) messages are never deleted
 	if e.Message.Type == discordgo.MessageTypeReply {
 		m.handleBlockedReply(s, e)
 		return
