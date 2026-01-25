@@ -62,6 +62,14 @@ func Migrate(d *sql.DB) error {
 			PRIMARY KEY (user_id, level)
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_level_up_messages_user ON level_up_messages(user_id);`,
+
+		// ✅ NEW: join tracking (NO guild_id — single server design)
+		`CREATE TABLE IF NOT EXISTS user_joins (
+			user_id   TEXT PRIMARY KEY,
+			username  TEXT NOT NULL DEFAULT '',
+			joined_at INTEGER NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_user_joins_joined_at ON user_joins(joined_at);`,
 	}
 
 	for _, q := range stmts {
@@ -92,6 +100,7 @@ func Migrate(d *sql.DB) error {
 	// Ensure indexes exist even after rebuilds
 	_, _ = d.Exec(`CREATE INDEX IF NOT EXISTS idx_user_xp_xp ON user_xp(xp DESC);`)
 	_, _ = d.Exec(`CREATE INDEX IF NOT EXISTS idx_level_up_messages_user ON level_up_messages(user_id);`)
+	_, _ = d.Exec(`CREATE INDEX IF NOT EXISTS idx_user_joins_joined_at ON user_joins(joined_at);`)
 
 	return nil
 }
