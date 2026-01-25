@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -65,14 +67,6 @@ func (m *TopStarsModule) onReady(s *discordgo.Session, r *discordgo.Ready) {
 					{Name: "Posts (most stars)", Value: "posts"},
 				},
 			},
-			{
-				Type:        discordgo.ApplicationCommandOptionInteger,
-				Name:        "limit",
-				Description: "How many results to show (1–25, default 10)",
-				Required:    false,
-				MinValue:    float64Ptr(1),
-				MaxValue:    25,
-			},
 		},
 	}
 
@@ -83,8 +77,6 @@ func (m *TopStarsModule) onReady(s *discordgo.Session, r *discordgo.Ready) {
 
 	log.Println("[starboard] registered /topstars")
 }
-
-func float64Ptr(v float64) *float64 { return &v }
 
 func deleteCommandsByName(s *discordgo.Session, appID, guildID, name string) error {
 	cmds, err := s.ApplicationCommands(appID, guildID)
@@ -99,100 +91,75 @@ func deleteCommandsByName(s *discordgo.Session, appID, guildID, name string) err
 	return nil
 }
 
+/* =========================
+   Interactions
+   ========================= */
+
 func (m *TopStarsModule) onInteractionCreate(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if i == nil || i.Interaction == nil {
 		return
 	}
-	if i.Type != discordgo.InteractionApplicationCommand {
-		return
-	}
 
-	data := i.ApplicationCommandData()
-	if data.Name != "topstars" {
-		return
-	}
-
-	kind := "users"
-	limit := 10
-
-	for _, opt := range data.Options {
-		if opt == nil {
-			continue
+	switch i.Type {
+	case discordgo.InteractionApplicationCommand:
+		data := i.ApplicationCommandData()
+		if data.Name != "topstars" {
+			return
 		}
-		switch opt.Name {
-		case "type":
-			if v, ok := opt.Value.(string); ok && v != "" {
-				kind = v
+
+		kind := "users"
+		for _, opt := range data.Options {
+			if opt == nil {
+				continue
 			}
-		case "limit":
-			limit = int(opt.IntValue())
+			if opt.Name == "type" {
+				if v, ok := opt.Value.(string); ok && v != "" {
+					kind = v
+				}
+			}
 		}
-	}
 
-	if limit < 1 {
-		limit = 1
-	}
-	if limit > 25 {
-		limit = 25
-	}
-
-	switch kind {
-	case "posts":
-		m.handleTopPosts(s, i, limit)
-	default:
-		m.handleTopUsers(s, i, limit)
-	}
-}
-
-func (m *TopStarsModule) handleTopUsers(s *discordgo.Session, i *discordgo.InteractionCreate, limit int) {
-	top, err := m.queryTopUsers(limit)
-	if err != nil {
-		respondEphemeral(s, i, "DB error reading top users.")
-		return
-	}
-	if len(top) == 0 {
-		respondEphemeral(s, i, "No starboard posts recorded yet.")
-		return
-	}
-
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("**Top Users (by starboard posts) — Top %d**\n", len(top)))
-	for idx, row := range top {
-		fmt.Fprintf(&b, "%d. <@%s> — **%d**\n", idx+1, row.AuthorID, row.Count)
-	}
-	respond(s, i, b.String())
-}
-
-func (m *TopStarsModule) handleTopPosts(s *discordgo.Session, i *discordgo.InteractionCreate, limit int) {
-	top, err := m.queryTopPosts(limit)
-	if err != nil {
-		respondEphemeral(s, i, "DB error reading top posts.")
-		return
-	}
-	if len(top) == 0 {
-		respondEphemeral(s, i, "No starboard posts recorded yet.")
-		return
-	}
-
-	guildID := i.GuildID
-
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("**Top Starboard Posts — Top %d**\n", len(top)))
-	for idx, row := range top {
-		jump := "(jump unavailable)"
-		if guildID != "" && row.OriginalChannelID != "" && row.OriginalMessageID != "" {
-			jump = makeJumpURL(guildID, row.OriginalChannelID, row.OriginalMessageID)
+		ownerID := interactionUserID(i)
+		if ownerID == "" {
+			respondEphemeral(s, i, "Could not determine user.")
+			return
 		}
-		fmt.Fprintf(&b, "%d. ⭐ **%d** — <@%s> — %s\n", idx+1, row.StarsCount, row.AuthorID, jump)
+
+		content, embed, comps, err := m.buildTopStarsPage(s, i, kind, ownerID, 0)
+		if err != nil {
+			respondEphemeral(s, i, "DB error reading topstars.")
+			return
+		}
+		if embed == nil {
+			respondEphemeral(s, i, "No starboard posts recorded yet.")
+			return
+		}
+
+		_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content:    content,
+				Embeds:     []*discordgo.MessageEmbed{embed},
+				Components: comps,
+			},
+		})
+
+	case discordgo.InteractionMessageComponent:
+		m.handleTopStarsComponent(s, i)
 	}
-	respond(s, i, b.String())
 }
 
-func respond(s *discordgo.Session, i *discordgo.InteractionCreate, msg string) {
-	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{Content: msg},
-	})
+func interactionUserID(i *discordgo.InteractionCreate) string {
+	if i == nil {
+		return ""
+	}
+	if i.Member != nil && i.Member.User != nil {
+		return i.Member.User.ID
+	}
+	if i.User != nil {
+		return i.User.ID
+	}
+	return ""
 }
 
 func respondEphemeral(s *discordgo.Session, i *discordgo.InteractionCreate, msg string) {
@@ -205,27 +172,265 @@ func respondEphemeral(s *discordgo.Session, i *discordgo.InteractionCreate, msg 
 	})
 }
 
+/* =========================
+   UI (same buttons as /leaderboard)
+   ========================= */
+
+const (
+	tsPageSize = 10
+	tsCustomID = "ts"
+)
+
+func (m *TopStarsModule) handleTopStarsComponent(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if i == nil || i.Message == nil {
+		return
+	}
+	data := i.MessageComponentData()
+
+	// expected: ts:<ownerID>:<kind>:<action>:<page>
+	parts := strings.Split(data.CustomID, ":")
+	if len(parts) != 5 || parts[0] != tsCustomID {
+		return
+	}
+	ownerID := parts[1]
+	kind := parts[2]
+	action := parts[3]
+	pageStr := parts[4]
+
+	clickerID := interactionUserID(i)
+	if clickerID == "" {
+		return
+	}
+	if clickerID != ownerID {
+		_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: "Only the person who ran this leaderboard can use these buttons.",
+				Flags:   discordgo.MessageFlagsEphemeral,
+			},
+		})
+		return
+	}
+
+	page, _ := strconv.Atoi(pageStr)
+	if page < 0 {
+		page = 0
+	}
+
+	// Fast ACK to avoid timeouts
+	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseUpdateMessage,
+		Data: &discordgo.InteractionResponseData{Components: loadingButtons()},
+	})
+
+	rowsUsers, rowsPosts, note, err := m.getTopStarsRows(i.GuildID, kind)
+	if err != nil {
+		msg := "DB error reading topstars."
+		_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content:    &msg,
+			Components: &[]discordgo.MessageComponent{},
+		})
+		return
+	}
+
+	total := 0
+	if kind == "posts" {
+		total = len(rowsPosts)
+	} else {
+		total = len(rowsUsers)
+	}
+	if total == 0 {
+		msg := "No starboard posts recorded yet."
+		_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content:    &msg,
+			Components: &[]discordgo.MessageComponent{},
+		})
+		return
+	}
+
+	maxPage := (total - 1) / tsPageSize
+
+	targetPage := page
+	switch action {
+	case "top":
+		targetPage = 0
+	case "prev":
+		targetPage = page - 1
+	case "next":
+		targetPage = page + 1
+	case "last":
+		targetPage = maxPage
+	case "me":
+		// jump to the page containing the invoker
+		if kind == "posts" {
+			for idx, r := range rowsPosts {
+				if r.AuthorID == ownerID {
+					targetPage = idx / tsPageSize
+					break
+				}
+			}
+		} else {
+			for idx, r := range rowsUsers {
+				if r.AuthorID == ownerID {
+					targetPage = idx / tsPageSize
+					break
+				}
+			}
+		}
+	}
+
+	if targetPage < 0 {
+		targetPage = 0
+	}
+	if targetPage > maxPage {
+		targetPage = maxPage
+	}
+
+	content, embed, comps := m.buildTopStarsPageFromRows(i.GuildID, kind, ownerID, targetPage, rowsUsers, rowsPosts, note)
+	_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+		Content:    &content,
+		Embeds:     &[]*discordgo.MessageEmbed{embed},
+		Components: &comps,
+	})
+}
+
+func loadingButtons() []discordgo.MessageComponent {
+	return []discordgo.MessageComponent{
+		discordgo.ActionsRow{Components: []discordgo.MessageComponent{
+			discordgo.Button{Style: discordgo.SecondaryButton, Label: "Loading…", CustomID: "ts_loading", Disabled: true},
+		}},
+	}
+}
+
+func topstarsButtons(ownerID, kind string, page, maxPage int) []discordgo.MessageComponent {
+	makeID := func(action string) string {
+		return fmt.Sprintf("%s:%s:%s:%s:%d", tsCustomID, ownerID, kind, action, page)
+	}
+	row := discordgo.ActionsRow{
+		Components: []discordgo.MessageComponent{
+			discordgo.Button{Style: discordgo.PrimaryButton, Label: "⏮️", CustomID: makeID("top"), Disabled: page == 0},
+			discordgo.Button{Style: discordgo.SecondaryButton, Label: "⬅️", CustomID: makeID("prev"), Disabled: page == 0},
+			discordgo.Button{Style: discordgo.SecondaryButton, Label: "🚹", CustomID: makeID("me")},
+			discordgo.Button{Style: discordgo.SecondaryButton, Label: "➡️", CustomID: makeID("next"), Disabled: page >= maxPage},
+			discordgo.Button{Style: discordgo.PrimaryButton, Label: "⏭️", CustomID: makeID("last"), Disabled: page >= maxPage},
+		},
+	}
+	return []discordgo.MessageComponent{row}
+}
+
+/* =========================
+   Data + Page Builder
+   ========================= */
+
 type topUserRow struct {
 	AuthorID string
 	Count    int
 }
 
-func (m *TopStarsModule) queryTopUsers(limit int) ([]topUserRow, error) {
+type topPostRow struct {
+	AuthorID          string
+	StarsCount        int
+	OriginalChannelID string
+	OriginalMessageID string
+}
+
+func (m *TopStarsModule) buildTopStarsPage(s *discordgo.Session, i *discordgo.InteractionCreate, kind, ownerID string, page int) (string, *discordgo.MessageEmbed, []discordgo.MessageComponent, error) {
+	users, posts, note, err := m.getTopStarsRows(i.GuildID, kind)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	if kind == "posts" && len(posts) == 0 {
+		return "", nil, nil, nil
+	}
+	if kind != "posts" && len(users) == 0 {
+		return "", nil, nil, nil
+	}
+	return m.buildTopStarsPageFromRows(i.GuildID, kind, ownerID, page, users, posts, note), nil
+}
+
+func (m *TopStarsModule) buildTopStarsPageFromRows(guildID, kind, ownerID string, page int, users []topUserRow, posts []topPostRow, note string) (string, *discordgo.MessageEmbed, []discordgo.MessageComponent) {
+	total := 0
+	if kind == "posts" {
+		total = len(posts)
+	} else {
+		total = len(users)
+	}
+	maxPage := (total - 1) / tsPageSize
+	if page < 0 {
+		page = 0
+	}
+	if page > maxPage {
+		page = maxPage
+	}
+
+	offset := page * tsPageSize
+	end := offset + tsPageSize
+	if end > total {
+		end = total
+	}
+	startRank := offset + 1
+	endRank := end
+
+	var b strings.Builder
+
+	title := ""
+	if kind == "posts" {
+		title = "Top Starboard Posts"
+		for idx := offset; idx < end; idx++ {
+			row := posts[idx]
+			jump := "(jump unavailable)"
+			if strings.TrimSpace(guildID) != "" && row.OriginalChannelID != "" && row.OriginalMessageID != "" {
+				jump = makeJumpURL(guildID, row.OriginalChannelID, row.OriginalMessageID)
+			}
+			fmt.Fprintf(&b, "%d. ⭐ **%d** — <@%s> — %s\n", startRank+(idx-offset), row.StarsCount, row.AuthorID, jump)
+		}
+	} else {
+		title = "Top Users (by starboard posts)"
+		for idx := offset; idx < end; idx++ {
+			row := users[idx]
+			fmt.Fprintf(&b, "%d. <@%s> — **%d**\n", startRank+(idx-offset), row.AuthorID, row.Count)
+		}
+	}
+
+	embed := &discordgo.MessageEmbed{
+		Title:       title,
+		Description: b.String(),
+		Footer: &discordgo.MessageEmbedFooter{
+			Text: fmt.Sprintf("Showing %d–%d of %d (Page %d/%d)", startRank, endRank, total, page+1, maxPage+1),
+		},
+		Timestamp: time.Now().Format(time.RFC3339),
+	}
+
+	content := strings.TrimSpace(note)
+	comps := topstarsButtons(ownerID, kind, page, maxPage)
+	return content, embed, comps
+}
+
+func (m *TopStarsModule) getTopStarsRows(guildID, kind string) ([]topUserRow, []topPostRow, string, error) {
+	_ = guildID // not stored in DB; jump URLs use interaction guildID
+
+	if kind == "posts" {
+		posts, err := m.queryAllTopPosts()
+		return nil, posts, "", err
+	}
+	users, err := m.queryAllTopUsers()
+	return users, nil, "", err
+}
+
+func (m *TopStarsModule) queryAllTopUsers() ([]topUserRow, error) {
 	rows, err := m.db.Query(
 		`SELECT author_id, COUNT(*) AS c
 		 FROM starboard_posts
 		 WHERE author_id != ''
 		 GROUP BY author_id
-		 ORDER BY c DESC
-		 LIMIT ?`,
-		limit,
+		 ORDER BY c DESC`,
 	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var out []topUserRow
+	out := make([]topUserRow, 0, 128)
 	for rows.Next() {
 		var r topUserRow
 		if err := rows.Scan(&r.AuthorID, &r.Count); err != nil {
@@ -236,28 +441,19 @@ func (m *TopStarsModule) queryTopUsers(limit int) ([]topUserRow, error) {
 	return out, rows.Err()
 }
 
-type topPostRow struct {
-	AuthorID          string
-	StarsCount        int
-	OriginalChannelID string
-	OriginalMessageID string
-}
-
-func (m *TopStarsModule) queryTopPosts(limit int) ([]topPostRow, error) {
+func (m *TopStarsModule) queryAllTopPosts() ([]topPostRow, error) {
 	rows, err := m.db.Query(
 		`SELECT author_id, stars_count, original_channel_id, original_message_id
 		 FROM starboard_posts
 		 WHERE author_id != ''
-		 ORDER BY stars_count DESC, created_at DESC
-		 LIMIT ?`,
-		limit,
+		 ORDER BY stars_count DESC, created_at DESC`,
 	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var out []topPostRow
+	out := make([]topPostRow, 0, 256)
 	for rows.Next() {
 		var r topPostRow
 		if err := rows.Scan(&r.AuthorID, &r.StarsCount, &r.OriginalChannelID, &r.OriginalMessageID); err != nil {
@@ -266,4 +462,15 @@ func (m *TopStarsModule) queryTopPosts(limit int) ([]topPostRow, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+/* =========================
+   Small helpers (same as levelling pattern)
+   ========================= */
+
+func respond(s *discordgo.Session, i *discordgo.InteractionCreate, msg string) {
+	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{Content: msg},
+	})
 }
