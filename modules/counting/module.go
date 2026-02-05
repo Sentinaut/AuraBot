@@ -15,7 +15,7 @@ import (
 
 const (
 	reactOK        = "✅"
-	reactHighScore = "☑️"
+	reactHighScore = "🟦✅" // blue tick for highscore
 	reactBad       = "❌"
 	reactHundred   = "💯"
 
@@ -50,22 +50,17 @@ func New(countingChannelID, triosChannelID, ruinedRoleID string, ruinedFor time.
 func (m *Module) Name() string { return "counting" }
 
 func (m *Module) Register(s *discordgo.Session) error {
-	// Slash commands are implemented in commands.go
 	s.AddHandler(m.onReady)
 	s.AddHandler(m.onInteractionCreate)
-
-	// Counting message handler
 	s.AddHandler(m.onMessageCreate)
 	return nil
 }
 
 func (m *Module) Start(ctx context.Context, s *discordgo.Session) error {
-	// Background expiry cleanup (role removals)
 	go func() {
 		t := time.NewTicker(5 * time.Minute)
 		defer t.Stop()
 
-		// run once at startup
 		m.cleanupExpired(s)
 
 		for {
@@ -79,7 +74,6 @@ func (m *Module) Start(ctx context.Context, s *discordgo.Session) error {
 			}
 		}
 	}()
-
 	return nil
 }
 
@@ -98,7 +92,6 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 
 	n, ok := parseLeadingInt(e.Content)
 	if !ok {
-		// Not a counting attempt; ignore.
 		return
 	}
 
@@ -110,7 +103,7 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 	}
 
 	if res.OK {
-		// Highscore tick vs normal tick
+		// normal vs highscore tick
 		if res.HighScore {
 			_ = s.MessageReactionAdd(e.ChannelID, e.ID, reactHighScore)
 		} else {
@@ -122,8 +115,8 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 			_ = s.MessageReactionAdd(e.ChannelID, e.ID, reactHundred)
 		}
 
-		// 200 / 500 / 1000 custom emojis
-		switch res.Count {
+		// custom milestones
+		switch n {
 		case 200:
 			_ = s.MessageReactionAdd(e.ChannelID, e.ID, emoji200)
 		case 500:
@@ -137,10 +130,13 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 
 	_ = s.MessageReactionAdd(e.ChannelID, e.ID, reactBad)
 
-	// Announce and punish
 	if res.RuinedAt > 0 {
-		msg := fmt.Sprintf("<@%s> **RUINED IT AT %d!!** Next number is **1**. %s",
-			e.Author.ID, res.RuinedAt, res.Reason)
+		msg := fmt.Sprintf(
+			"<@%s> **RUINED IT AT %d!!** Next number is **1**. %s",
+			e.Author.ID,
+			res.RuinedAt,
+			res.Reason,
+		)
 		_, _ = s.ChannelMessageSend(e.ChannelID, msg)
 	}
 
@@ -180,29 +176,23 @@ func parseLeadingInt(s string) (int64, bool) {
 }
 
 type applyResult struct {
-	OK       bool
+	OK        bool
 	RuinedAt int64
 	Reason   string
 
 	HighScore bool
 	Hit100    bool
-	Count     int64
 }
 
 func (m *Module) applyCount(mode channelMode, guildID, channelID, userID, username string, newCount int64) (applyResult, error) {
-	if m.db == nil {
-		return applyResult{OK: false}, sql.ErrConnDone
-	}
-
 	tx, err := m.db.Begin()
 	if err != nil {
-		return applyResult{OK: false}, err
+		return applyResult{}, err
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer tx.Rollback()
 
 	var lastCount int64
-	var lastUser string
-	var prevUser string
+	var lastUser, prevUser string
 
 	err = tx.QueryRow(
 		`SELECT last_count, last_user_id, prev_user_id
@@ -211,54 +201,33 @@ func (m *Module) applyCount(mode channelMode, guildID, channelID, userID, userna
 		channelID,
 	).Scan(&lastCount, &lastUser, &prevUser)
 
-	if err != nil {
-		if err == sql.ErrNoRows {
-			lastCount = 0
-			lastUser = ""
-			prevUser = ""
-		} else {
-			return applyResult{OK: false}, err
-		}
+	if err == sql.ErrNoRows {
+		lastCount = 0
+		lastUser = ""
+		prevUser = ""
+	} else if err != nil {
+		return applyResult{}, err
 	}
 
 	expected := lastCount + 1
-
-	// Validate number
 	if newCount != expected {
-		if err := m.resetState(tx, channelID); err != nil {
-			return applyResult{OK: false}, err
-		}
-		if err := tx.Commit(); err != nil {
-			return applyResult{OK: false}, err
-		}
+		_ = m.resetState(tx, channelID)
+		_ = tx.Commit()
 		return applyResult{OK: false, RuinedAt: lastCount, Reason: "Wrong number."}, nil
 	}
 
-	// Validate spacing
-	switch mode {
-	case modeNormal:
-		if lastUser != "" && userID == lastUser {
-			if err := m.resetState(tx, channelID); err != nil {
-				return applyResult{OK: false}, err
-			}
-			if err := tx.Commit(); err != nil {
-				return applyResult{OK: false}, err
-			}
-			return applyResult{OK: false, RuinedAt: lastCount, Reason: "You can't count twice in a row."}, nil
-		}
-	case modeTrios:
-		if (lastUser != "" && userID == lastUser) || (prevUser != "" && userID == prevUser) {
-			if err := m.resetState(tx, channelID); err != nil {
-				return applyResult{OK: false}, err
-			}
-			if err := tx.Commit(); err != nil {
-				return applyResult{OK: false}, err
-			}
-			return applyResult{OK: false, RuinedAt: lastCount, Reason: "In trios you must wait for 2 other people to count."}, nil
-		}
+	if mode == modeNormal && userID == lastUser {
+		_ = m.resetState(tx, channelID)
+		_ = tx.Commit()
+		return applyResult{OK: false, RuinedAt: lastCount, Reason: "You can't count twice in a row."}, nil
 	}
 
-	// Read previous high score BEFORE we update it
+	if mode == modeTrios && (userID == lastUser || userID == prevUser) {
+		_ = m.resetState(tx, channelID)
+		_ = tx.Commit()
+		return applyResult{OK: false, RuinedAt: lastCount, Reason: "In trios you must wait for 2 other people to count."}, nil
+	}
+
 	var prevHigh int64
 	_ = tx.QueryRow(
 		`SELECT high_score FROM counting_channel_stats WHERE channel_id = ?;`,
@@ -267,7 +236,6 @@ func (m *Module) applyCount(mode channelMode, guildID, channelID, userID, userna
 
 	now := time.Now().Unix()
 
-	// Success: upsert and shift history (prev <- last, last <- current)
 	_, err = tx.Exec(
 		`INSERT INTO counting_state (channel_id, last_count, last_user_id, prev_user_id, updated_at)
 		 VALUES (?, ?, ?, ?, ?)
@@ -279,25 +247,9 @@ func (m *Module) applyCount(mode channelMode, guildID, channelID, userID, userna
 		channelID, newCount, userID, prevUser, now,
 	)
 	if err != nil {
-		return applyResult{OK: false}, err
+		return applyResult{}, err
 	}
 
-	// ✅ Per-channel per-user stats
-	username = strings.TrimSpace(username)
-	_, err = tx.Exec(
-		`INSERT INTO counting_user_stats_v2 (channel_id, user_id, username, counts, last_counted_at)
-		 VALUES (?, ?, ?, 1, ?)
-		 ON CONFLICT(channel_id, user_id) DO UPDATE SET
-			username = CASE WHEN excluded.username != '' THEN excluded.username ELSE counting_user_stats_v2.username END,
-			counts = counting_user_stats_v2.counts + 1,
-			last_counted_at = excluded.last_counted_at;`,
-		channelID, userID, username, now,
-	)
-	if err != nil {
-		return applyResult{OK: false}, err
-	}
-
-	// ✅ Per-channel totals + highscore
 	_, err = tx.Exec(
 		`INSERT INTO counting_channel_stats (channel_id, high_score, high_score_at, total_counted)
 		 VALUES (?, ?, ?, 1)
@@ -308,17 +260,16 @@ func (m *Module) applyCount(mode channelMode, guildID, channelID, userID, userna
 		channelID, newCount, now,
 	)
 	if err != nil {
-		return applyResult{OK: false}, err
+		return applyResult{}, err
 	}
 
 	if err := tx.Commit(); err != nil {
-		return applyResult{OK: false}, err
+		return applyResult{}, err
 	}
 
 	return applyResult{
 		OK:        true,
 		HighScore: newCount > prevHigh,
 		Hit100:    newCount == 100,
-		Count:     newCount,
 	}, nil
 }
