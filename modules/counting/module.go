@@ -22,6 +22,10 @@ const (
 	emoji200  = "200:1469034517938438235"
 	emoji500  = "500:1469034589505851647"
 	emoji1000 = "1000:1469034633885777960"
+
+	// Custom "ruined the count" user + media
+	customRuinerUserID = "614628933337350149"
+	customRuinerGIFURL = "https://media.tenor.com/QVe9jYKuGawAAAPo/sydney-trains-scrapping.mp4"
 )
 
 type Module struct {
@@ -147,14 +151,21 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 
 	// Announce and punish
 	if res.RuinedAt > 0 {
-		// Requested format: second line for Next number + reason
-		msg := fmt.Sprintf(
-			"<@%s> **RUINED IT AT %d!!**\nNext number is **1**. %s",
-			e.Author.ID,
-			res.RuinedAt,
-			res.Reason,
-		)
-		_, _ = s.ChannelMessageSend(e.ChannelID, msg)
+		// Custom reaction for specific user
+		if e.Author.ID == customRuinerUserID {
+			msg := fmt.Sprintf("<@%s> ruined the count once again... shock", e.Author.ID)
+			_, _ = s.ChannelMessageSend(e.ChannelID, msg)
+			_, _ = s.ChannelMessageSend(e.ChannelID, customRuinerGIFURL)
+		} else {
+			// Requested format: second line for Next number + reason
+			msg := fmt.Sprintf(
+				"<@%s> **RUINED IT AT %d!!**\nNext number is **1**. %s",
+				e.Author.ID,
+				res.RuinedAt,
+				res.Reason,
+			)
+			_, _ = s.ChannelMessageSend(e.ChannelID, msg)
+		}
 	}
 
 	m.punish(s, e.GuildID, e.Author.ID)
