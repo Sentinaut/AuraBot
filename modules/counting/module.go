@@ -15,7 +15,7 @@ import (
 
 const (
 	reactOK        = "✅"
-	reactHighScore = "🟦✅" // blue tick for highscore
+	reactHighScore = "☑️" // blue tick for highscore
 	reactBad       = "❌"
 	reactHundred   = "💯"
 
