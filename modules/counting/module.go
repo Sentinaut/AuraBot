@@ -14,8 +14,14 @@ import (
 )
 
 const (
-	reactOK  = "✅"
-	reactBad = "❌"
+	reactOK        = "✅"
+	reactHighScore = "☑️"
+	reactBad       = "❌"
+	reactHundred   = "💯"
+
+	emoji200  = "200:1469034517938438235"
+	emoji500  = "500:1469034589505851647"
+	emoji1000 = "1000:1469034633885777960"
 )
 
 type Module struct {
@@ -106,7 +112,28 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 	}
 
 	if res.OK {
-		_ = s.MessageReactionAdd(e.ChannelID, e.ID, reactOK)
+		// ✅ normal vs ☑️ high score
+		if res.HighScore {
+			_ = s.MessageReactionAdd(e.ChannelID, e.ID, reactHighScore)
+		} else {
+			_ = s.MessageReactionAdd(e.ChannelID, e.ID, reactOK)
+		}
+
+		// 💯 at 100
+		if res.Count == 100 {
+			_ = s.MessageReactionAdd(e.ChannelID, e.ID, reactHundred)
+		}
+
+		// custom milestone emojis
+		switch res.Count {
+		case 200:
+			_ = s.MessageReactionAdd(e.ChannelID, e.ID, emoji200)
+		case 500:
+			_ = s.MessageReactionAdd(e.ChannelID, e.ID, emoji500)
+		case 1000:
+			_ = s.MessageReactionAdd(e.ChannelID, e.ID, emoji1000)
+		}
+
 		return
 	}
 
@@ -169,6 +196,9 @@ type applyResult struct {
 	OK       bool
 	RuinedAt int64
 	Reason   string
+
+	HighScore bool
+	Count     int64
 }
 
 // applyCount enforces per-channel counting rules and persists state.
@@ -248,6 +278,20 @@ func (m *Module) applyCount(mode channelMode, guildID, channelID, userID, userna
 		}
 	}
 
+	// Read previous high score (before updating)
+	var prevHigh int64
+	err = tx.QueryRow(
+		`SELECT high_score FROM counting_channel_stats WHERE channel_id = ?;`,
+		channelID,
+	).Scan(&prevHigh)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			prevHigh = 0
+		} else {
+			return applyResult{OK: false}, err
+		}
+	}
+
 	now := time.Now().Unix()
 
 	// Success: upsert and shift history (prev <- last, last <- current)
@@ -265,7 +309,7 @@ func (m *Module) applyCount(mode channelMode, guildID, channelID, userID, userna
 		return applyResult{OK: false}, err
 	}
 
-	// ✅ Per-channel per-user stats
+	// ✅ Per-channel per-user stats (leaderboard; never goes down)
 	username = strings.TrimSpace(username)
 	_, err = tx.Exec(
 		`INSERT INTO counting_user_stats_v2 (channel_id, user_id, username, counts, last_counted_at)
@@ -297,7 +341,11 @@ func (m *Module) applyCount(mode channelMode, guildID, channelID, userID, userna
 	if err := tx.Commit(); err != nil {
 		return applyResult{OK: false}, err
 	}
-	return applyResult{OK: true}, nil
+	return applyResult{
+		OK:        true,
+		HighScore: newCount > prevHigh,
+		Count:     newCount,
+	}, nil
 }
 
 func (m *Module) resetState(tx *sql.Tx, channelID string) error {
