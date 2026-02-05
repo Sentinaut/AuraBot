@@ -7,11 +7,14 @@ import (
 )
 
 // Migrate ensures the SQLite schema is up-to-date.
+// This bot is single-server for XP + level-up messages (no guild_id there),
+// but autoroles remains guild-scoped.
 func Migrate(d *sql.DB) error {
 	// SQLiteStudio convenience views; bot never relies on them.
 	_, _ = d.Exec(`DROP VIEW IF EXISTS "User XP";`)
 	_, _ = d.Exec(`DROP VIEW IF EXISTS "Level Up Messages";`)
 
+	// Base schema (idempotent)
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS voting_threads (
 			message_id TEXT PRIMARY KEY,
@@ -37,7 +40,7 @@ func Migrate(d *sql.DB) error {
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_user_xp_xp ON user_xp(xp DESC);`,
 
-		// Counting channels (per-channel state)
+		// Counting channels (per-channel state; survives restarts)
 		`CREATE TABLE IF NOT EXISTS counting_state (
 			channel_id   TEXT PRIMARY KEY,
 			last_count   INTEGER NOT NULL DEFAULT 0,
@@ -46,16 +49,21 @@ func Migrate(d *sql.DB) error {
 			updated_at   INTEGER NOT NULL DEFAULT 0
 		);`,
 
-		// Counting leaderboards
-		`CREATE TABLE IF NOT EXISTS counting_user_stats (
-			user_id         TEXT PRIMARY KEY,
+		// ✅ Per-channel user stats (v2) so we can have separate leaderboards for counting + trios
+		`CREATE TABLE IF NOT EXISTS counting_user_stats_v2 (
+			channel_id      TEXT NOT NULL,
+			user_id         TEXT NOT NULL,
 			username        TEXT NOT NULL DEFAULT '',
 			counts          INTEGER NOT NULL DEFAULT 0,
-			last_counted_at INTEGER NOT NULL DEFAULT 0
+			last_counted_at INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (channel_id, user_id)
 		);`,
-		`CREATE INDEX IF NOT EXISTS idx_counting_user_stats_counts ON counting_user_stats(counts DESC);`,
+		`CREATE INDEX IF NOT EXISTS idx_counting_user_stats_v2_counts
+			ON counting_user_stats_v2(channel_id, counts DESC);`,
+		`CREATE INDEX IF NOT EXISTS idx_counting_user_stats_v2_user
+			ON counting_user_stats_v2(user_id);`,
 
-		// Counting per-channel totals/highscore
+		// Per-channel totals + highscore
 		`CREATE TABLE IF NOT EXISTS counting_channel_stats (
 			channel_id    TEXT PRIMARY KEY,
 			high_score    INTEGER NOT NULL DEFAULT 0,
@@ -63,7 +71,7 @@ func Migrate(d *sql.DB) error {
 			total_counted INTEGER NOT NULL DEFAULT 0
 		);`,
 
-		// Counting punishments (temporary role)
+		// Counting punishments (temporary role on mess-up)
 		`CREATE TABLE IF NOT EXISTS counting_punishments (
 			guild_id   TEXT NOT NULL,
 			user_id    TEXT NOT NULL,
@@ -73,7 +81,7 @@ func Migrate(d *sql.DB) error {
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_counting_punishments_expires ON counting_punishments(expires_at);`,
 
-		// Guild-scoped autoroles
+		// Guild-scoped autoroles (keeps guild_id)
 		`CREATE TABLE IF NOT EXISTS autoroles (
 			guild_id   TEXT NOT NULL,
 			channel_id TEXT NOT NULL,
@@ -144,7 +152,8 @@ func Migrate(d *sql.DB) error {
 	_, _ = d.Exec(`CREATE INDEX IF NOT EXISTS idx_level_up_messages_user ON level_up_messages(user_id);`)
 	_, _ = d.Exec(`CREATE INDEX IF NOT EXISTS idx_user_joins_joined_at ON user_joins(joined_at);`)
 	_, _ = d.Exec(`CREATE INDEX IF NOT EXISTS idx_counting_punishments_expires ON counting_punishments(expires_at);`)
-	_, _ = d.Exec(`CREATE INDEX IF NOT EXISTS idx_counting_user_stats_counts ON counting_user_stats(counts DESC);`)
+	_, _ = d.Exec(`CREATE INDEX IF NOT EXISTS idx_counting_user_stats_v2_counts ON counting_user_stats_v2(channel_id, counts DESC);`)
+	_, _ = d.Exec(`CREATE INDEX IF NOT EXISTS idx_counting_user_stats_v2_user ON counting_user_stats_v2(user_id);`)
 
 	return nil
 }
@@ -161,8 +170,8 @@ func ensureColumn(d *sql.DB, table, column, alterSQL string) error {
 	return err
 }
 
-// hasColumn checks whether a column exists in a table using PRAGMA table_info.
-// IMPORTANT: PRAGMA doesn't support binding table names as params, so we validate identifiers.
+// IMPORTANT: PRAGMA does not accept bound parameters for identifiers.
+// We validate identifiers before formatting.
 func hasColumn(d *sql.DB, table, column string) (bool, error) {
 	if !isSafeSQLiteIdent(table) {
 		return false, fmt.Errorf("unsafe table identifier: %q", table)
@@ -173,17 +182,15 @@ func hasColumn(d *sql.DB, table, column string) (bool, error) {
 	}
 	defer rows.Close()
 
-	// PRAGMA table_info columns:
-	// cid, name, type, notnull, dflt_value, pk
+	var (
+		cid       int
+		name      string
+		typ       string
+		notnull   int
+		dfltValue any
+		pk        int
+	)
 	for rows.Next() {
-		var (
-			cid       int
-			name      string
-			typ       string
-			notnull   int
-			dfltValue sql.NullString
-			pk        int
-		)
 		if err := rows.Scan(&cid, &name, &typ, &notnull, &dfltValue, &pk); err != nil {
 			return false, err
 		}
@@ -191,10 +198,7 @@ func hasColumn(d *sql.DB, table, column string) (bool, error) {
 			return true, nil
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return false, err
-	}
-	return false, nil
+	return false, rows.Err()
 }
 
 func isSafeSQLiteIdent(s string) bool {
@@ -219,7 +223,6 @@ func migrateUserXPToSingleServer(d *sql.DB) error {
 		return err
 	}
 	if !hasGuild {
-		// Ensure username exists on older minimal schemas
 		return ensureColumn(d, "user_xp", "username", `ALTER TABLE user_xp ADD COLUMN username TEXT NOT NULL DEFAULT ''`)
 	}
 
