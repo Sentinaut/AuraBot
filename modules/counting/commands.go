@@ -188,14 +188,14 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 				return
 			}
 
-			// (Optional) basic permission guard: require Manage Guild
+			// Require Manage Guild (Manage Server)
 			if i.Member == nil || (i.Member.Permissions&discordgo.PermissionManageGuild) == 0 {
 				respondEphemeral(s, i, "You need **Manage Server** to use this.")
 				return
 			}
 
-			var targetUser *discordgo.User
-			var amount int64
+			targetUserID := ""
+			amount := int64(0)
 
 			for _, opt := range data.Options {
 				if opt == nil {
@@ -203,11 +203,11 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 				}
 				switch opt.Name {
 				case "user":
-					if opt.User != nil {
-						targetUser = opt.User
+					// Older discordgo: user option value is typically the user ID as a string
+					if v, ok := opt.Value.(string); ok && v != "" {
+						targetUserID = v
 					}
 				case "amount":
-					// Discordgo gives float64 for numbers in some versions, but Integer option should be int64.
 					switch v := opt.Value.(type) {
 					case int64:
 						amount = v
@@ -220,7 +220,7 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 				}
 			}
 
-			if targetUser == nil || targetUser.ID == "" {
+			if targetUserID == "" {
 				respondEphemeral(s, i, "Missing user.")
 				return
 			}
@@ -229,13 +229,21 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 				return
 			}
 
-			if err := m.increaseCountScore(i.ChannelID, targetUser.ID, targetUser.Username, amount); err != nil {
+			// Best-effort username
+			username := ""
+			if data.Resolved != nil && data.Resolved.Users != nil {
+				if u, ok := data.Resolved.Users[targetUserID]; ok && u != nil {
+					username = u.Username
+				}
+			}
+
+			if err := m.increaseCountScore(i.ChannelID, targetUserID, username, amount); err != nil {
 				log.Printf("[counting] countscoreincrease db error: %v", err)
 				respondEphemeral(s, i, "DB error updating score.")
 				return
 			}
 
-			respondEphemeral(s, i, fmt.Sprintf("Added **%d** to <@%s> in this channel’s counting leaderboard.", amount, targetUser.ID))
+			respondEphemeral(s, i, fmt.Sprintf("Added **%d** to <@%s> in this channel’s counting leaderboard.", amount, targetUserID))
 		}
 
 	case discordgo.InteractionMessageComponent:
@@ -349,7 +357,6 @@ func (m *Module) increaseCountScore(channelID, userID, username string, amount i
 	username = strings.TrimSpace(username)
 	now := time.Now().Unix()
 
-	// counting_user_stats_v2 is what your leaderboard reads
 	_, err := m.db.Exec(
 		`INSERT INTO counting_user_stats_v2 (channel_id, user_id, username, counts, last_counted_at)
 		 VALUES (?, ?, ?, ?, ?)
@@ -433,7 +440,6 @@ func (m *Module) fetchLeaderboard(scope, channelID string) ([]lbRow, error) {
 	}
 
 	if scope == "total" {
-		// combined across BOTH channels
 		rows, err := m.db.Query(
 			`SELECT user_id,
 			        MAX(username) AS username,
@@ -461,7 +467,6 @@ func (m *Module) fetchLeaderboard(scope, channelID string) ([]lbRow, error) {
 		return out, rows.Err()
 	}
 
-	// scope == channel
 	rows, err := m.db.Query(
 		`SELECT user_id, username, counts
 		 FROM counting_user_stats_v2
