@@ -240,8 +240,7 @@ func (m *Module) buildCountingInfoEmbed(channelID string) (*discordgo.MessageEmb
 				"**High Score:** %d (%s)\n"+
 				"**Total Counted:** %d\n"+
 				"**Last counted by:** %s\n"+
-				"**Last count:** %s\n\n"+
-				"/help",
+				"**Last count:** %s",
 			lastCount,
 			highScore,
 			highAgo,
@@ -311,7 +310,7 @@ func (m *Module) buildLeaderboardEmbed(ownerID, scope, channelID string, page in
 
 	embed := &discordgo.MessageEmbed{
 		Title:       title,
-		Description: strings.Join(lines, "\n") + fmt.Sprintf("\n\n/help | Page %d/%d", page+1, maxPage+1),
+		Description: strings.Join(lines, "\n"),
 		Color:       0x2ECC71,
 		Timestamp:   time.Now().Format(time.RFC3339),
 	}
