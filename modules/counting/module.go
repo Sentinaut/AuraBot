@@ -56,11 +56,17 @@ func (m *Module) Register(s *discordgo.Session) error {
 
 	// Counting message handler
 	s.AddHandler(m.onMessageCreate)
+
+	// Deleted message handlers
+	s.AddHandler(m.onMessageDelete)
+	s.AddHandler(m.onMessageDeleteBulk)
+
 	return nil
 }
 
 func (m *Module) Start(ctx context.Context, s *discordgo.Session) error {
-	// Schema is owned by internal/db/migrate.go
+	// Schema is owned by internal/db/migrate.go, but we need ONE extra column for this feature.
+	m.ensureDeleteTrackingSchema()
 
 	// Background expiry cleanup (role removals)
 	go func() {
@@ -104,7 +110,7 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 		return
 	}
 
-	res, err := m.applyCount(mode, e.GuildID, e.ChannelID, e.Author.ID, e.Author.Username, n)
+	res, err := m.applyCount(mode, e.GuildID, e.ChannelID, e.Author.ID, e.Author.Username, e.ID, n)
 	if err != nil {
 		log.Printf("[counting] apply error: %v", err)
 		_ = s.MessageReactionAdd(e.ChannelID, e.ID, reactBad)
@@ -141,12 +147,71 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 
 	// Announce and punish
 	if res.RuinedAt > 0 {
-		msg := fmt.Sprintf("<@%s> **RUINED IT AT %d!!** Next number is **1**. %s",
-			e.Author.ID, res.RuinedAt, res.Reason)
+		// Requested format: second line for Next number + reason
+		msg := fmt.Sprintf(
+			"<@%s> **RUINED IT AT %d!!**\nNext number is **1**. %s",
+			e.Author.ID,
+			res.RuinedAt,
+			res.Reason,
+		)
 		_, _ = s.ChannelMessageSend(e.ChannelID, msg)
 	}
 
 	m.punish(s, e.GuildID, e.Author.ID)
+}
+
+func (m *Module) onMessageDelete(s *discordgo.Session, e *discordgo.MessageDelete) {
+	if e == nil {
+		return
+	}
+	m.handleDeletedMessage(s, e.GuildID, e.ChannelID, e.ID)
+}
+
+func (m *Module) onMessageDeleteBulk(s *discordgo.Session, e *discordgo.MessageDeleteBulk) {
+	if e == nil {
+		return
+	}
+	for _, id := range e.Messages {
+		m.handleDeletedMessage(s, e.GuildID, e.ChannelID, id)
+	}
+}
+
+func (m *Module) handleDeletedMessage(s *discordgo.Session, guildID, channelID, messageID string) {
+	// Only act in the 2 counting channels
+	if m.channelMode(channelID) == modeDisabled {
+		return
+	}
+	if m.db == nil || strings.TrimSpace(messageID) == "" {
+		return
+	}
+
+	var lastCount int64
+	var lastUserID string
+	var lastMsgID string
+
+	err := m.db.QueryRow(
+		`SELECT last_count, last_user_id, last_message_id
+		 FROM counting_state
+		 WHERE channel_id = ?;`,
+		channelID,
+	).Scan(&lastCount, &lastUserID, &lastMsgID)
+
+	if err != nil {
+		// no rows / schema mismatch / etc -> ignore
+		return
+	}
+
+	if lastMsgID == "" || lastMsgID != messageID {
+		return
+	}
+
+	next := lastCount + 1
+	if lastUserID == "" {
+		return
+	}
+
+	msg := fmt.Sprintf("<@%s> has deleted their count, the next number is **%d**.", lastUserID, next)
+	_, _ = s.ChannelMessageSend(channelID, msg)
 }
 
 type channelMode int
@@ -209,7 +274,7 @@ type applyResult struct {
 //  - Both modes: newCount must equal lastCount+1.
 //  - Normal: same user cannot count twice in a row.
 //  - Trios: user cannot count if they were one of the last TWO counters.
-func (m *Module) applyCount(mode channelMode, guildID, channelID, userID, username string, newCount int64) (applyResult, error) {
+func (m *Module) applyCount(mode channelMode, guildID, channelID, userID, username, messageID string, newCount int64) (applyResult, error) {
 	if m.db == nil {
 		return applyResult{OK: false}, sql.ErrConnDone
 	}
@@ -296,14 +361,15 @@ func (m *Module) applyCount(mode channelMode, guildID, channelID, userID, userna
 
 	// Success: upsert and shift history (prev <- last, last <- current)
 	_, err = tx.Exec(
-		`INSERT INTO counting_state (channel_id, last_count, last_user_id, prev_user_id, updated_at)
-		 VALUES (?, ?, ?, ?, ?)
+		`INSERT INTO counting_state (channel_id, last_count, last_user_id, prev_user_id, updated_at, last_message_id)
+		 VALUES (?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(channel_id) DO UPDATE SET
 			last_count = excluded.last_count,
 			prev_user_id = counting_state.last_user_id,
 			last_user_id = excluded.last_user_id,
-			updated_at = excluded.updated_at;`,
-		channelID, newCount, userID, prevUser, now,
+			updated_at = excluded.updated_at,
+			last_message_id = excluded.last_message_id;`,
+		channelID, newCount, userID, prevUser, now, messageID,
 	)
 	if err != nil {
 		return applyResult{OK: false}, err
@@ -341,6 +407,7 @@ func (m *Module) applyCount(mode channelMode, guildID, channelID, userID, userna
 	if err := tx.Commit(); err != nil {
 		return applyResult{OK: false}, err
 	}
+
 	return applyResult{
 		OK:        true,
 		HighScore: newCount > prevHigh,
@@ -351,13 +418,14 @@ func (m *Module) applyCount(mode channelMode, guildID, channelID, userID, userna
 func (m *Module) resetState(tx *sql.Tx, channelID string) error {
 	now := time.Now().Unix()
 	_, err := tx.Exec(
-		`INSERT INTO counting_state (channel_id, last_count, last_user_id, prev_user_id, updated_at)
-		 VALUES (?, 0, '', '', ?)
+		`INSERT INTO counting_state (channel_id, last_count, last_user_id, prev_user_id, updated_at, last_message_id)
+		 VALUES (?, 0, '', '', ?, '')
 		 ON CONFLICT(channel_id) DO UPDATE SET
 			last_count = 0,
 			last_user_id = '',
 			prev_user_id = '',
-			updated_at = excluded.updated_at;`,
+			updated_at = excluded.updated_at,
+			last_message_id = '';`,
 		channelID, now,
 	)
 	return err
@@ -448,5 +516,24 @@ func (m *Module) cleanupExpired(s *discordgo.Session) {
 			`DELETE FROM counting_punishments WHERE guild_id = ? AND user_id = ? AND role_id = ?;`,
 			it.guildID, it.userID, it.roleID,
 		)
+	}
+}
+
+// Adds counting_state.last_message_id if missing (required for delete announcements).
+func (m *Module) ensureDeleteTrackingSchema() {
+	if m.db == nil {
+		return
+	}
+
+	// SQLite: no IF NOT EXISTS for ADD COLUMN, so ignore "duplicate column name" errors.
+	_, err := m.db.Exec(`ALTER TABLE counting_state ADD COLUMN last_message_id TEXT NOT NULL DEFAULT '';`)
+	if err != nil {
+		// Already exists or table missing (table is owned by migrate.go). Both are safe to ignore here.
+		if !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+			// If migrate hasn't run yet, you'll see "no such table". That's fine; it'll exist after migrations.
+			if !strings.Contains(strings.ToLower(err.Error()), "no such table") {
+				log.Printf("[counting] ensure schema warning: %v", err)
+			}
+		}
 	}
 }
