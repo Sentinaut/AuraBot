@@ -44,6 +44,8 @@ func New(countingChannelID, triosChannelID, ruinedRoleID string, ruinedFor time.
 func (m *Module) Name() string { return "counting" }
 
 func (m *Module) Register(s *discordgo.Session) error {
+	s.AddHandler(m.onReady)
+	s.AddHandler(m.onInteractionCreate)
 	s.AddHandler(m.onMessageCreate)
 	return nil
 }
@@ -93,7 +95,7 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 		return
 	}
 
-	res, err := m.applyCount(mode, e.GuildID, e.ChannelID, e.Author.ID, n)
+	res, err := m.applyCount(mode, e.GuildID, e.ChannelID, e.Author.ID, e.Author.Username, n)
 	if err != nil {
 		log.Printf("[counting] apply error: %v", err)
 		_ = s.MessageReactionAdd(e.ChannelID, e.ID, reactBad)
@@ -174,7 +176,7 @@ type applyResult struct {
 //  - Both modes: newCount must equal lastCount+1.
 //  - Normal: same user cannot count twice in a row.
 //  - Trios: user cannot count if they were one of the last TWO counters (3-person rotation).
-func (m *Module) applyCount(mode channelMode, guildID, channelID, userID string, newCount int64) (applyResult, error) {
+func (m *Module) applyCount(mode channelMode, guildID, channelID, userID, username string, newCount int64) (applyResult, error) {
 	if m.db == nil {
 		return applyResult{OK: false}, sql.ErrConnDone
 	}
@@ -267,6 +269,35 @@ func (m *Module) applyCount(mode channelMode, guildID, channelID, userID string,
 			last_user_id = excluded.last_user_id,
 			updated_at = excluded.updated_at;`,
 		channelID, newCount, userID, prevUser, now,
+	)
+	if err != nil {
+		return applyResult{OK: false}, err
+	}
+
+	// Update per-user stats (leaderboards)
+	username = strings.TrimSpace(username)
+	_, err = tx.Exec(
+		`INSERT INTO counting_user_stats (user_id, username, counts, last_counted_at)
+		 VALUES (?, ?, 1, ?)
+		 ON CONFLICT(user_id) DO UPDATE SET
+			username = CASE WHEN excluded.username != '' THEN excluded.username ELSE counting_user_stats.username END,
+			counts = counting_user_stats.counts + 1,
+			last_counted_at = excluded.last_counted_at;`,
+		userID, username, now,
+	)
+	if err != nil {
+		return applyResult{OK: false}, err
+	}
+
+	// Update per-channel stats (high score + totals)
+	_, err = tx.Exec(
+		`INSERT INTO counting_channel_stats (channel_id, high_score, high_score_at, total_counted)
+		 VALUES (?, ?, ?, 1)
+		 ON CONFLICT(channel_id) DO UPDATE SET
+			total_counted = counting_channel_stats.total_counted + 1,
+			high_score = CASE WHEN excluded.high_score > counting_channel_stats.high_score THEN excluded.high_score ELSE counting_channel_stats.high_score END,
+			high_score_at = CASE WHEN excluded.high_score > counting_channel_stats.high_score THEN excluded.high_score_at ELSE counting_channel_stats.high_score_at END;`,
+		channelID, newCount, now,
 	)
 	if err != nil {
 		return applyResult{OK: false}, err
