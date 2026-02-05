@@ -47,6 +47,22 @@ func Migrate(d *sql.DB) error {
 			updated_at   INTEGER NOT NULL DEFAULT 0
 		);`,
 
+		// Counting stats (leaderboards + info)
+		`CREATE TABLE IF NOT EXISTS counting_user_stats (
+			user_id         TEXT PRIMARY KEY,
+			username        TEXT NOT NULL DEFAULT '',
+			counts          INTEGER NOT NULL DEFAULT 0,
+			last_counted_at INTEGER NOT NULL DEFAULT 0
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_counting_user_stats_counts ON counting_user_stats(counts DESC);`,
+
+		`CREATE TABLE IF NOT EXISTS counting_channel_stats (
+			channel_id    TEXT PRIMARY KEY,
+			high_score    INTEGER NOT NULL DEFAULT 0,
+			high_score_at INTEGER NOT NULL DEFAULT 0,
+			total_counted INTEGER NOT NULL DEFAULT 0
+		);`,
+
 		// Counting punishments (temporary role on mess-up)
 		`CREATE TABLE IF NOT EXISTS counting_punishments (
 			guild_id   TEXT NOT NULL,
@@ -130,6 +146,7 @@ func Migrate(d *sql.DB) error {
 	_, _ = d.Exec(`CREATE INDEX IF NOT EXISTS idx_level_up_messages_user ON level_up_messages(user_id);`)
 	_, _ = d.Exec(`CREATE INDEX IF NOT EXISTS idx_user_joins_joined_at ON user_joins(joined_at);`)
 	_, _ = d.Exec(`CREATE INDEX IF NOT EXISTS idx_counting_punishments_expires ON counting_punishments(expires_at);`)
+	_, _ = d.Exec(`CREATE INDEX IF NOT EXISTS idx_counting_user_stats_counts ON counting_user_stats(counts DESC);`)
 
 	return nil
 }
@@ -159,125 +176,79 @@ func migrateUserXPToSingleServer(d *sql.DB) error {
 
 	hasUsername, _ := hasColumn(d, "user_xp", "username")
 
-	tx, err := d.Begin()
+	// Create new table
+	_, err = d.Exec(`CREATE TABLE IF NOT EXISTS user_xp_new (
+		user_id    TEXT PRIMARY KEY,
+		username   TEXT NOT NULL DEFAULT '',
+		xp         INTEGER NOT NULL DEFAULT 0,
+		last_xp_at INTEGER NOT NULL DEFAULT 0
+	);`)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback() }()
 
-	if _, err := tx.Exec(`
-		CREATE TABLE IF NOT EXISTS user_xp_new (
-			user_id    TEXT PRIMARY KEY,
-			username   TEXT NOT NULL DEFAULT '',
-			xp         INTEGER NOT NULL DEFAULT 0,
-			last_xp_at INTEGER NOT NULL DEFAULT 0
-		);
-	`); err != nil {
-		return err
-	}
-
+	// Copy data
 	if hasUsername {
-		_, err = tx.Exec(`
-			INSERT OR REPLACE INTO user_xp_new(user_id, username, xp, last_xp_at)
-			SELECT user_id, MAX(username), MAX(xp), MAX(last_xp_at)
-			FROM user_xp
-			GROUP BY user_id;
-		`)
+		_, err = d.Exec(`INSERT INTO user_xp_new (user_id, username, xp, last_xp_at)
+			SELECT user_id, username, xp, last_xp_at FROM user_xp;`)
 	} else {
-		_, err = tx.Exec(`
-			INSERT OR REPLACE INTO user_xp_new(user_id, username, xp, last_xp_at)
-			SELECT user_id, '', MAX(xp), MAX(last_xp_at)
-			FROM user_xp
-			GROUP BY user_id;
-		`)
+		_, err = d.Exec(`INSERT INTO user_xp_new (user_id, username, xp, last_xp_at)
+			SELECT user_id, '', xp, last_xp_at FROM user_xp;`)
 	}
 	if err != nil {
 		return err
 	}
 
-	if _, err := tx.Exec(`DROP TABLE user_xp;`); err != nil {
+	// Swap
+	if _, err := d.Exec(`DROP TABLE user_xp;`); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`ALTER TABLE user_xp_new RENAME TO user_xp;`); err != nil {
+	if _, err := d.Exec(`ALTER TABLE user_xp_new RENAME TO user_xp;`); err != nil {
 		return err
 	}
 
-	return tx.Commit()
+	return nil
 }
 
 func migrateLevelUpMessagesToSingleServer(d *sql.DB) error {
-	// If level_up_messages has guild_id, rebuild to remove it.
 	hasGuild, err := hasColumn(d, "level_up_messages", "guild_id")
 	if err != nil {
 		return err
 	}
 	if !hasGuild {
-		return nil
+		// Ensure username exists on older minimal schemas
+		return ensureColumn(d, "level_up_messages", "username", `ALTER TABLE level_up_messages ADD COLUMN username TEXT NOT NULL DEFAULT ''`)
 	}
 
-	tx, err := d.Begin()
+	// Create new table
+	_, err = d.Exec(`CREATE TABLE IF NOT EXISTS level_up_messages_new (
+		user_id    TEXT NOT NULL,
+		username   TEXT NOT NULL DEFAULT '',
+		level      INTEGER NOT NULL,
+		channel_id TEXT NOT NULL,
+		message_id TEXT NOT NULL,
+		content    TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		PRIMARY KEY (user_id, level)
+	);`)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback() }()
 
-	if _, err := tx.Exec(`
-		CREATE TABLE IF NOT EXISTS level_up_messages_new (
-			user_id    TEXT NOT NULL,
-			username   TEXT NOT NULL DEFAULT '',
-			level      INTEGER NOT NULL,
-			channel_id TEXT NOT NULL,
-			message_id TEXT NOT NULL,
-			content    TEXT NOT NULL,
-			created_at INTEGER NOT NULL,
-			PRIMARY KEY (user_id, level)
-		);
-	`); err != nil {
-		return err
-	}
-
-	// Keep the most recent record per (user_id, level).
-	if _, err := tx.Exec(`
-		INSERT OR REPLACE INTO level_up_messages_new(user_id, username, level, channel_id, message_id, content, created_at)
-		SELECT user_id, MAX(username), level, MAX(channel_id), MAX(message_id), MAX(content), MAX(created_at)
-		FROM level_up_messages
-		GROUP BY user_id, level;
-	`); err != nil {
-		return err
-	}
-
-	if _, err := tx.Exec(`DROP TABLE level_up_messages;`); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`ALTER TABLE level_up_messages_new RENAME TO level_up_messages;`); err != nil {
-		return err
-	}
-
-	return tx.Commit()
-}
-
-func hasColumn(d *sql.DB, table, column string) (bool, error) {
-	rows, err := d.Query(`PRAGMA table_info(` + table + `);`)
+	// Copy data (ignore guild_id)
+	_, err = d.Exec(`INSERT INTO level_up_messages_new (user_id, username, level, channel_id, message_id, content, created_at)
+		SELECT user_id, username, level, channel_id, message_id, content, created_at FROM level_up_messages;`)
 	if err != nil {
-		return false, err
+		return err
 	}
-	defer rows.Close()
 
-	var (
-		cid       int
-		name      string
-		typ       string
-		notnull   int
-		dfltValue any
-		pk        int
-	)
-	for rows.Next() {
-		if err := rows.Scan(&cid, &name, &typ, &notnull, &dfltValue, &pk); err != nil {
-			return false, err
-		}
-		if name == column {
-			return true, nil
-		}
+	// Swap
+	if _, err := d.Exec(`DROP TABLE level_up_messages;`); err != nil {
+		return err
 	}
-	return false, rows.Err()
+	if _, err := d.Exec(`ALTER TABLE level_up_messages_new RENAME TO level_up_messages;`); err != nil {
+		return err
+	}
+
+	return nil
 }
