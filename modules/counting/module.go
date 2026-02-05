@@ -175,7 +175,7 @@ type applyResult struct {
 // Rules:
 //  - Both modes: newCount must equal lastCount+1.
 //  - Normal: same user cannot count twice in a row.
-//  - Trios: user cannot count if they were one of the last TWO counters (3-person rotation).
+//  - Trios: user cannot count if they were one of the last TWO counters.
 func (m *Module) applyCount(mode channelMode, guildID, channelID, userID, username string, newCount int64) (applyResult, error) {
 	if m.db == nil {
 		return applyResult{OK: false}, sql.ErrConnDone
@@ -212,7 +212,6 @@ func (m *Module) applyCount(mode channelMode, guildID, channelID, userID, userna
 
 	// Validate number
 	if newCount != expected {
-		// reset on failure
 		if err := m.resetState(tx, channelID); err != nil {
 			return applyResult{OK: false}, err
 		}
@@ -258,7 +257,7 @@ func (m *Module) applyCount(mode channelMode, guildID, channelID, userID, userna
 		}
 	}
 
-	// Success: upsert and shift history (prev <- last, last <- current)
+	// Success: upsert and shift history
 	now := time.Now().Unix()
 	_, err = tx.Exec(
 		`INSERT INTO counting_state (channel_id, last_count, last_user_id, prev_user_id, updated_at)
@@ -274,22 +273,22 @@ func (m *Module) applyCount(mode channelMode, guildID, channelID, userID, userna
 		return applyResult{OK: false}, err
 	}
 
-	// Update per-user stats (leaderboards)
+	// ✅ Per-channel per-user stats (v2)
 	username = strings.TrimSpace(username)
 	_, err = tx.Exec(
-		`INSERT INTO counting_user_stats (user_id, username, counts, last_counted_at)
-		 VALUES (?, ?, 1, ?)
-		 ON CONFLICT(user_id) DO UPDATE SET
-			username = CASE WHEN excluded.username != '' THEN excluded.username ELSE counting_user_stats.username END,
-			counts = counting_user_stats.counts + 1,
+		`INSERT INTO counting_user_stats_v2 (channel_id, user_id, username, counts, last_counted_at)
+		 VALUES (?, ?, ?, 1, ?)
+		 ON CONFLICT(channel_id, user_id) DO UPDATE SET
+			username = CASE WHEN excluded.username != '' THEN excluded.username ELSE counting_user_stats_v2.username END,
+			counts = counting_user_stats_v2.counts + 1,
 			last_counted_at = excluded.last_counted_at;`,
-		userID, username, now,
+		channelID, userID, username, now,
 	)
 	if err != nil {
 		return applyResult{OK: false}, err
 	}
 
-	// Update per-channel stats (high score + totals)
+	// ✅ Per-channel totals + highscore
 	_, err = tx.Exec(
 		`INSERT INTO counting_channel_stats (channel_id, high_score, high_score_at, total_counted)
 		 VALUES (?, ?, ?, 1)
@@ -335,10 +334,9 @@ func (m *Module) punish(s *discordgo.Session, guildID, userID string) {
 		return
 	}
 
-	// Assign role (requires Manage Roles and role hierarchy)
+	// Assign role
 	if err := s.GuildMemberRoleAdd(guildID, userID, m.ruinedRoleID); err != nil {
 		log.Printf("[counting] failed to add ruined role: %v", err)
-		// still store expiry so it gets removed if role was added manually
 	}
 
 	expiresAt := time.Now().Add(m.ruinedFor).Unix()
@@ -382,7 +380,7 @@ func (m *Module) cleanupExpired(s *discordgo.Session) {
 	type item struct {
 		guildID string
 		userID  string
-		roleID  string
+		roleID  string	string
 	}
 	var items []item
 	for rows.Next() {
@@ -403,7 +401,6 @@ func (m *Module) cleanupExpired(s *discordgo.Session) {
 			continue
 		}
 		if err := s.GuildMemberRoleRemove(it.guildID, it.userID, it.roleID); err != nil {
-			// Might fail if role already removed or hierarchy; still delete DB row to avoid retry spam.
 			log.Printf("[counting] failed to remove expired role (continuing): %v", err)
 		}
 		_, _ = m.db.Exec(
