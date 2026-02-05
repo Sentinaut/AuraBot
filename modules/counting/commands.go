@@ -31,9 +31,11 @@ func (m *Module) onReady(s *discordgo.Session, r *discordgo.Ready) {
 
 	_ = deleteCommandsByName(s, appID, guildID, "countingleaderboard")
 	_ = deleteCommandsByName(s, appID, guildID, "countinginfo")
+	_ = deleteCommandsByName(s, appID, guildID, "countscoreincrease")
 	if guildID != "" {
 		_ = deleteCommandsByName(s, appID, "", "countingleaderboard")
 		_ = deleteCommandsByName(s, appID, "", "countinginfo")
+		_ = deleteCommandsByName(s, appID, "", "countscoreincrease")
 	}
 
 	_, err := s.ApplicationCommandCreate(appID, guildID, &discordgo.ApplicationCommand{
@@ -66,7 +68,32 @@ func (m *Module) onReady(s *discordgo.Session, r *discordgo.Ready) {
 		return
 	}
 
-	log.Println("[counting] registered /countingleaderboard and /countinginfo")
+	// NEW: /countscoreincrease user amount
+	_, err = s.ApplicationCommandCreate(appID, guildID, &discordgo.ApplicationCommand{
+		Name:        "countscoreincrease",
+		Description: "Increase a user's counting leaderboard score in this channel",
+		Options: []*discordgo.ApplicationCommandOption{
+			{
+				Type:        discordgo.ApplicationCommandOptionUser,
+				Name:        "user",
+				Description: "User to increase",
+				Required:    true,
+			},
+			{
+				Type:        discordgo.ApplicationCommandOptionInteger,
+				Name:        "amount",
+				Description: "Amount to add (must be > 0)",
+				Required:    true,
+				MinValue:    func() *float64 { v := 1.0; return &v }(),
+			},
+		},
+	})
+	if err != nil {
+		log.Printf("[counting] command create failed (countscoreincrease): %v", err)
+		return
+	}
+
+	log.Println("[counting] registered /countingleaderboard, /countinginfo, /countscoreincrease")
 }
 
 func deleteCommandsByName(s *discordgo.Session, appID, guildID, name string) error {
@@ -153,6 +180,62 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 					Components: comps,
 				},
 			})
+
+		case "countscoreincrease":
+			// must be in a counting channel so we know which channel leaderboard to edit
+			if m.channelMode(i.ChannelID) == modeDisabled {
+				respondEphemeral(s, i, "Run this in #counting or #counting-trios so I know which leaderboard to modify.")
+				return
+			}
+
+			// (Optional) basic permission guard: require Manage Guild
+			if i.Member == nil || (i.Member.Permissions&discordgo.PermissionManageGuild) == 0 {
+				respondEphemeral(s, i, "You need **Manage Server** to use this.")
+				return
+			}
+
+			var targetUser *discordgo.User
+			var amount int64
+
+			for _, opt := range data.Options {
+				if opt == nil {
+					continue
+				}
+				switch opt.Name {
+				case "user":
+					if opt.User != nil {
+						targetUser = opt.User
+					}
+				case "amount":
+					// Discordgo gives float64 for numbers in some versions, but Integer option should be int64.
+					switch v := opt.Value.(type) {
+					case int64:
+						amount = v
+					case float64:
+						amount = int64(v)
+					case string:
+						parsed, _ := strconv.ParseInt(v, 10, 64)
+						amount = parsed
+					}
+				}
+			}
+
+			if targetUser == nil || targetUser.ID == "" {
+				respondEphemeral(s, i, "Missing user.")
+				return
+			}
+			if amount <= 0 {
+				respondEphemeral(s, i, "Amount must be **greater than 0**.")
+				return
+			}
+
+			if err := m.increaseCountScore(i.ChannelID, targetUser.ID, targetUser.Username, amount); err != nil {
+				log.Printf("[counting] countscoreincrease db error: %v", err)
+				respondEphemeral(s, i, "DB error updating score.")
+				return
+			}
+
+			respondEphemeral(s, i, fmt.Sprintf("Added **%d** to <@%s> in this channel’s counting leaderboard.", amount, targetUser.ID))
 		}
 
 	case discordgo.InteractionMessageComponent:
@@ -255,6 +338,31 @@ func (m *Module) buildCountingInfoEmbed(channelID string) (*discordgo.MessageEmb
 }
 
 /* =========================
+   SCORE INCREASE (manual import)
+   ========================= */
+
+func (m *Module) increaseCountScore(channelID, userID, username string, amount int64) error {
+	if m.db == nil {
+		return sql.ErrConnDone
+	}
+
+	username = strings.TrimSpace(username)
+	now := time.Now().Unix()
+
+	// counting_user_stats_v2 is what your leaderboard reads
+	_, err := m.db.Exec(
+		`INSERT INTO counting_user_stats_v2 (channel_id, user_id, username, counts, last_counted_at)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(channel_id, user_id) DO UPDATE SET
+			username = CASE WHEN excluded.username != '' THEN excluded.username ELSE counting_user_stats_v2.username END,
+			counts = counting_user_stats_v2.counts + excluded.counts,
+			last_counted_at = excluded.last_counted_at;`,
+		channelID, userID, username, amount, now,
+	)
+	return err
+}
+
+/* =========================
    LEADERBOARD
    scope=channel: per channel you run it in
    scope=total: combined across both channels
@@ -290,9 +398,9 @@ func (m *Module) buildLeaderboardEmbed(ownerID, scope, channelID string, page in
 	}
 
 	lines := make([]string, 0, end-start)
-	for i := start; i < end; i++ {
-		r := rows[i]
-		n := i + 1
+	for idx := start; idx < end; idx++ {
+		r := rows[idx]
+		n := idx + 1
 		name := strings.TrimSpace(r.Username)
 		if name == "" {
 			name = "<@" + r.UserID + ">"
@@ -422,9 +530,6 @@ func (m *Module) handleLeaderboardButtons(s *discordgo.Session, i *discordgo.Int
 		page = 0
 	}
 
-	// decide channel context:
-	// - for scope=channel, we must use the channel where the message was posted
-	// - for scope=total, channelID doesn't matter (but we still pass it)
 	channelID := i.ChannelID
 
 	rows, err := m.fetchLeaderboard(scope, channelID)
