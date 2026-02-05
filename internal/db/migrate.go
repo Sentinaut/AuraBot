@@ -38,6 +38,15 @@ func Migrate(d *sql.DB) error {
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_user_xp_xp ON user_xp(xp DESC);`,
 
+		// Counting channels (per-channel state; survives restarts)
+		`CREATE TABLE IF NOT EXISTS counting_state (
+			channel_id   TEXT PRIMARY KEY,
+			last_count   INTEGER NOT NULL DEFAULT 0,
+			last_user_id TEXT NOT NULL DEFAULT '',
+			prev_user_id TEXT NOT NULL DEFAULT '',
+			updated_at   INTEGER NOT NULL DEFAULT 0
+		);`,
+
 		// Guild-scoped autoroles (keeps guild_id)
 		`CREATE TABLE IF NOT EXISTS autoroles (
 			guild_id   TEXT NOT NULL,
@@ -79,6 +88,7 @@ func Migrate(d *sql.DB) error {
 	}
 
 	// Additive schema upgrades (safe on existing DBs)
+
 	if err := ensureColumn(d, "starboard_posts", "author_id", `ALTER TABLE starboard_posts ADD COLUMN author_id TEXT NOT NULL DEFAULT ''`); err != nil {
 		return err
 	}
@@ -177,15 +187,13 @@ func migrateUserXPToSingleServer(d *sql.DB) error {
 }
 
 func migrateLevelUpMessagesToSingleServer(d *sql.DB) error {
-	// If the table doesn't exist yet, CREATE TABLE above handled it.
-	// If PRAGMA fails for some reason, just skip and let next run succeed.
+	// If level_up_messages has guild_id, rebuild to remove it.
 	hasGuild, err := hasColumn(d, "level_up_messages", "guild_id")
 	if err != nil {
-		return nil
+		return err
 	}
 	if !hasGuild {
-		// Ensure username exists on older minimal schemas
-		return ensureColumn(d, "level_up_messages", "username", `ALTER TABLE level_up_messages ADD COLUMN username TEXT NOT NULL DEFAULT ''`)
+		return nil
 	}
 
 	tx, err := d.Begin()
@@ -209,11 +217,12 @@ func migrateLevelUpMessagesToSingleServer(d *sql.DB) error {
 		return err
 	}
 
-	// Historical rows may not have username info.
+	// Keep the most recent record per (user_id, level).
 	if _, err := tx.Exec(`
 		INSERT OR REPLACE INTO level_up_messages_new(user_id, username, level, channel_id, message_id, content, created_at)
-		SELECT user_id, '', level, channel_id, message_id, content, created_at
-		FROM level_up_messages;
+		SELECT user_id, MAX(username), level, MAX(channel_id), MAX(message_id), MAX(content), MAX(created_at)
+		FROM level_up_messages
+		GROUP BY user_id, level;
 	`); err != nil {
 		return err
 	}
@@ -229,22 +238,22 @@ func migrateLevelUpMessagesToSingleServer(d *sql.DB) error {
 }
 
 func hasColumn(d *sql.DB, table, column string) (bool, error) {
-	rows, err := d.Query(`PRAGMA table_info(` + table + `)`)
+	rows, err := d.Query(`PRAGMA table_info(` + table + `);`)
 	if err != nil {
 		return false, err
 	}
 	defer rows.Close()
 
+	var (
+		cid        int
+		name       string
+		typ        string
+		notnull    int
+		dfltValue  any
+		pk         int
+	)
 	for rows.Next() {
-		var (
-			cid       int
-			name      string
-			ctype     string
-			notnull   int
-			dfltValue sql.NullString
-			pk        int
-		)
-		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dfltValue, &pk); err != nil {
 			return false, err
 		}
 		if name == column {
