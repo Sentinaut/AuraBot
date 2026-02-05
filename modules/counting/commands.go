@@ -68,10 +68,10 @@ func (m *Module) onReady(s *discordgo.Session, r *discordgo.Ready) {
 		return
 	}
 
-	// NEW: /countscoreincrease user amount
+	// NEW: /countscoreincrease user amount [channel]
 	_, err = s.ApplicationCommandCreate(appID, guildID, &discordgo.ApplicationCommand{
 		Name:        "countscoreincrease",
-		Description: "Increase a user's counting leaderboard score in this channel",
+		Description: "Increase a user's counting leaderboard score",
 		Options: []*discordgo.ApplicationCommandOption{
 			{
 				Type:        discordgo.ApplicationCommandOptionUser,
@@ -85,6 +85,16 @@ func (m *Module) onReady(s *discordgo.Session, r *discordgo.Ready) {
 				Description: "Amount to add (must be > 0)",
 				Required:    true,
 				MinValue:    func() *float64 { v := 1.0; return &v }(),
+			},
+			{
+				Type:        discordgo.ApplicationCommandOptionString,
+				Name:        "channel",
+				Description: "Which counting channel to apply this to (optional if you run it inside one)",
+				Required:    false,
+				Choices: []*discordgo.ApplicationCommandOptionChoice{
+					{Name: "counting", Value: "counting"},
+					{Name: "counting-trios", Value: "counting-trios"},
+				},
 			},
 		},
 	})
@@ -182,12 +192,6 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 			})
 
 		case "countscoreincrease":
-			// must be in a counting channel so we know which channel leaderboard to edit
-			if m.channelMode(i.ChannelID) == modeDisabled {
-				respondEphemeral(s, i, "Run this in #counting or #counting-trios so I know which leaderboard to modify.")
-				return
-			}
-
 			// Require Manage Guild (Manage Server)
 			if i.Member == nil || (i.Member.Permissions&discordgo.PermissionManageGuild) == 0 {
 				respondEphemeral(s, i, "You need **Manage Server** to use this.")
@@ -196,6 +200,7 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 
 			targetUserID := ""
 			amount := int64(0)
+			channelChoice := "" // "counting" | "counting-trios" | ""
 
 			for _, opt := range data.Options {
 				if opt == nil {
@@ -217,6 +222,10 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 						parsed, _ := strconv.ParseInt(v, 10, 64)
 						amount = parsed
 					}
+				case "channel":
+					if v, ok := opt.Value.(string); ok && v != "" {
+						channelChoice = v
+					}
 				}
 			}
 
@@ -229,6 +238,30 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 				return
 			}
 
+			// Decide which channel leaderboard to apply to:
+			// - If channel option provided: use that
+			// - Else: use current channel if it's a counting channel
+			targetChannelID := ""
+			switch channelChoice {
+			case "counting":
+				targetChannelID = m.countingChannelID
+			case "counting-trios":
+				targetChannelID = m.triosChannelID
+			case "":
+				// fallback to current channel if it's a counting channel
+				if m.channelMode(i.ChannelID) != modeDisabled {
+					targetChannelID = i.ChannelID
+				}
+			default:
+				// should never happen because choices restrict it, but be safe
+				targetChannelID = ""
+			}
+
+			if strings.TrimSpace(targetChannelID) == "" {
+				respondEphemeral(s, i, "Pick a channel option (counting / counting-trios), or run the command inside one of the counting channels.")
+				return
+			}
+
 			// Best-effort username
 			username := ""
 			if data.Resolved != nil && data.Resolved.Users != nil {
@@ -237,13 +270,20 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 				}
 			}
 
-			if err := m.increaseCountScore(i.ChannelID, targetUserID, username, amount); err != nil {
+			if err := m.increaseCountScore(targetChannelID, targetUserID, username, amount); err != nil {
 				log.Printf("[counting] countscoreincrease db error: %v", err)
 				respondEphemeral(s, i, "DB error updating score.")
 				return
 			}
 
-			respondEphemeral(s, i, fmt.Sprintf("Added **%d** to <@%s> in this channel’s counting leaderboard.", amount, targetUserID))
+			which := "this channel"
+			if targetChannelID == m.countingChannelID {
+				which = "#counting"
+			} else if targetChannelID == m.triosChannelID {
+				which = "#counting-trios"
+			}
+
+			respondEphemeral(s, i, fmt.Sprintf("Added **%d** to <@%s> in %s’s counting leaderboard.", amount, targetUserID, which))
 		}
 
 	case discordgo.InteractionMessageComponent:
