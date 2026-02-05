@@ -3,6 +3,7 @@ package counting
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
 	"strconv"
 	"strings"
@@ -22,13 +23,21 @@ type Module struct {
 
 	countingChannelID string
 	triosChannelID    string
+
+	ruinedRoleID string
+	ruinedFor    time.Duration
+
+	stop chan struct{}
 }
 
-func New(countingChannelID, triosChannelID string, db *sql.DB) *Module {
+func New(countingChannelID, triosChannelID, ruinedRoleID string, ruinedFor time.Duration, db *sql.DB) *Module {
 	return &Module{
 		db:                db,
 		countingChannelID: strings.TrimSpace(countingChannelID),
 		triosChannelID:    strings.TrimSpace(triosChannelID),
+		ruinedRoleID:      strings.TrimSpace(ruinedRoleID),
+		ruinedFor:         ruinedFor,
+		stop:              make(chan struct{}),
 	}
 }
 
@@ -41,6 +50,27 @@ func (m *Module) Register(s *discordgo.Session) error {
 
 func (m *Module) Start(ctx context.Context, s *discordgo.Session) error {
 	// Schema is owned by internal/db/migrate.go
+
+	// Background expiry cleanup (role removals)
+	go func() {
+		t := time.NewTicker(5 * time.Minute)
+		defer t.Stop()
+
+		// run once at startup
+		m.cleanupExpired(s)
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-m.stop:
+				return
+			case <-t.C:
+				m.cleanupExpired(s)
+			}
+		}
+	}()
+
 	return nil
 }
 
@@ -63,18 +93,28 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 		return
 	}
 
-	okCount, err := m.applyCount(mode, e.ChannelID, e.Author.ID, n)
+	res, err := m.applyCount(mode, e.GuildID, e.ChannelID, e.Author.ID, n)
 	if err != nil {
 		log.Printf("[counting] apply error: %v", err)
 		_ = s.MessageReactionAdd(e.ChannelID, e.ID, reactBad)
 		return
 	}
 
-	if okCount {
+	if res.OK {
 		_ = s.MessageReactionAdd(e.ChannelID, e.ID, reactOK)
-	} else {
-		_ = s.MessageReactionAdd(e.ChannelID, e.ID, reactBad)
+		return
 	}
+
+	_ = s.MessageReactionAdd(e.ChannelID, e.ID, reactBad)
+
+	// Announce and punish
+	if res.RuinedAt > 0 {
+		msg := fmt.Sprintf("<@%s> **RUINED IT AT %d!!** Next number is **1**. %s",
+			e.Author.ID, res.RuinedAt, res.Reason)
+		_, _ = s.ChannelMessageSend(e.ChannelID, msg)
+	}
+
+	m.punish(s, e.GuildID, e.Author.ID)
 }
 
 type channelMode int
@@ -120,20 +160,28 @@ func parseLeadingInt(s string) (int64, bool) {
 	return n, true
 }
 
+type applyResult struct {
+	OK       bool
+	RuinedAt int64
+	Reason   string
+}
+
 // applyCount enforces per-channel counting rules and persists state.
+//
+// If a user fails, the counter is reset to 0 so the next correct number is 1.
 //
 // Rules:
 //  - Both modes: newCount must equal lastCount+1.
 //  - Normal: same user cannot count twice in a row.
 //  - Trios: user cannot count if they were one of the last TWO counters (3-person rotation).
-func (m *Module) applyCount(mode channelMode, channelID, userID string, newCount int64) (bool, error) {
+func (m *Module) applyCount(mode channelMode, guildID, channelID, userID string, newCount int64) (applyResult, error) {
 	if m.db == nil {
-		return false, sql.ErrConnDone
+		return applyResult{OK: false}, sql.ErrConnDone
 	}
 
 	tx, err := m.db.Begin()
 	if err != nil {
-		return false, err
+		return applyResult{OK: false}, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -154,33 +202,62 @@ func (m *Module) applyCount(mode channelMode, channelID, userID string, newCount
 			lastUser = ""
 			prevUser = ""
 		} else {
-			return false, err
+			return applyResult{OK: false}, err
 		}
 	}
 
-	// Must be sequential
-	if newCount != lastCount+1 {
-		_ = tx.Commit() // commit no-op work
-		return false, nil
+	expected := lastCount + 1
+
+	// Validate number
+	if newCount != expected {
+		// reset on failure
+		if err := m.resetState(tx, channelID); err != nil {
+			return applyResult{OK: false}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return applyResult{OK: false}, err
+		}
+		return applyResult{
+			OK:       false,
+			RuinedAt: lastCount,
+			Reason:   "Wrong number.",
+		}, nil
 	}
 
-	// Spacing rule
+	// Validate spacing
 	switch mode {
 	case modeNormal:
 		if lastUser != "" && userID == lastUser {
-			_ = tx.Commit()
-			return false, nil
+			if err := m.resetState(tx, channelID); err != nil {
+				return applyResult{OK: false}, err
+			}
+			if err := tx.Commit(); err != nil {
+				return applyResult{OK: false}, err
+			}
+			return applyResult{
+				OK:       false,
+				RuinedAt: lastCount,
+				Reason:   "You can't count twice in a row.",
+			}, nil
 		}
 	case modeTrios:
 		if (lastUser != "" && userID == lastUser) || (prevUser != "" && userID == prevUser) {
-			_ = tx.Commit()
-			return false, nil
+			if err := m.resetState(tx, channelID); err != nil {
+				return applyResult{OK: false}, err
+			}
+			if err := tx.Commit(); err != nil {
+				return applyResult{OK: false}, err
+			}
+			return applyResult{
+				OK:       false,
+				RuinedAt: lastCount,
+				Reason:   "In trios you must wait for 2 other people to count.",
+			}, nil
 		}
 	}
 
+	// Success: upsert and shift history (prev <- last, last <- current)
 	now := time.Now().Unix()
-
-	// Upsert and shift history (prev <- last, last <- current)
 	_, err = tx.Exec(
 		`INSERT INTO counting_state (channel_id, last_count, last_user_id, prev_user_id, updated_at)
 		 VALUES (?, ?, ?, ?, ?)
@@ -192,11 +269,115 @@ func (m *Module) applyCount(mode channelMode, channelID, userID string, newCount
 		channelID, newCount, userID, prevUser, now,
 	)
 	if err != nil {
-		return false, err
+		return applyResult{OK: false}, err
 	}
 
 	if err := tx.Commit(); err != nil {
-		return false, err
+		return applyResult{OK: false}, err
 	}
-	return true, nil
+	return applyResult{OK: true}, nil
+}
+
+func (m *Module) resetState(tx *sql.Tx, channelID string) error {
+	now := time.Now().Unix()
+	_, err := tx.Exec(
+		`INSERT INTO counting_state (channel_id, last_count, last_user_id, prev_user_id, updated_at)
+		 VALUES (?, 0, '', '', ?)
+		 ON CONFLICT(channel_id) DO UPDATE SET
+			last_count = 0,
+			last_user_id = '',
+			prev_user_id = '',
+			updated_at = excluded.updated_at;`,
+		channelID, now,
+	)
+	return err
+}
+
+func (m *Module) punish(s *discordgo.Session, guildID, userID string) {
+	if strings.TrimSpace(guildID) == "" {
+		return
+	}
+	if strings.TrimSpace(m.ruinedRoleID) == "" {
+		return
+	}
+	if m.ruinedFor <= 0 {
+		return
+	}
+
+	// Assign role (requires Manage Roles and role hierarchy)
+	if err := s.GuildMemberRoleAdd(guildID, userID, m.ruinedRoleID); err != nil {
+		log.Printf("[counting] failed to add ruined role: %v", err)
+		// still store expiry so it gets removed if role was added manually
+	}
+
+	expiresAt := time.Now().Add(m.ruinedFor).Unix()
+	_, err := m.db.Exec(
+		`INSERT INTO counting_punishments (guild_id, user_id, role_id, expires_at)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(guild_id, user_id, role_id) DO UPDATE SET
+			expires_at = CASE
+				WHEN excluded.expires_at > counting_punishments.expires_at THEN excluded.expires_at
+				ELSE counting_punishments.expires_at
+			END;`,
+		guildID, userID, m.ruinedRoleID, expiresAt,
+	)
+	if err != nil {
+		log.Printf("[counting] failed to store punishment expiry: %v", err)
+	}
+}
+
+func (m *Module) cleanupExpired(s *discordgo.Session) {
+	if m.db == nil {
+		return
+	}
+	if strings.TrimSpace(m.ruinedRoleID) == "" {
+		return
+	}
+
+	now := time.Now().Unix()
+
+	rows, err := m.db.Query(
+		`SELECT guild_id, user_id, role_id
+		 FROM counting_punishments
+		 WHERE expires_at <= ?;`,
+		now,
+	)
+	if err != nil {
+		log.Printf("[counting] cleanup query error: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	type item struct {
+		guildID string
+		userID  string
+		roleID  string
+	}
+	var items []item
+	for rows.Next() {
+		var it item
+		if err := rows.Scan(&it.guildID, &it.userID, &it.roleID); err != nil {
+			log.Printf("[counting] cleanup scan error: %v", err)
+			return
+		}
+		items = append(items, it)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[counting] cleanup rows error: %v", err)
+		return
+	}
+
+	for _, it := range items {
+		if it.guildID == "" || it.userID == "" || it.roleID == "" {
+			continue
+		}
+		if err := s.GuildMemberRoleRemove(it.guildID, it.userID, it.roleID); err != nil {
+			// Might fail if role already removed or hierarchy; still delete DB row to avoid retry spam.
+			log.Printf("[counting] failed to remove expired role (continuing): %v", err)
+		}
+		_, _ = m.db.Exec(
+			`DELETE FROM counting_punishments WHERE guild_id = ? AND user_id = ? AND role_id = ?;`,
+			it.guildID, it.userID, it.roleID,
+		)
+	}
 }
