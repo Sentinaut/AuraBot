@@ -2,17 +2,16 @@ package db
 
 import (
 	"database/sql"
+	"fmt"
+	"unicode"
 )
 
 // Migrate ensures the SQLite schema is up-to-date.
-// This bot is single-server for XP + level-up messages (no guild_id there),
-// but autoroles remains guild-scoped.
 func Migrate(d *sql.DB) error {
 	// SQLiteStudio convenience views; bot never relies on them.
 	_, _ = d.Exec(`DROP VIEW IF EXISTS "User XP";`)
 	_, _ = d.Exec(`DROP VIEW IF EXISTS "Level Up Messages";`)
 
-	// Base schema (idempotent)
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS voting_threads (
 			message_id TEXT PRIMARY KEY,
@@ -38,7 +37,7 @@ func Migrate(d *sql.DB) error {
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_user_xp_xp ON user_xp(xp DESC);`,
 
-		// Counting channels (per-channel state; survives restarts)
+		// Counting channels (per-channel state)
 		`CREATE TABLE IF NOT EXISTS counting_state (
 			channel_id   TEXT PRIMARY KEY,
 			last_count   INTEGER NOT NULL DEFAULT 0,
@@ -47,7 +46,7 @@ func Migrate(d *sql.DB) error {
 			updated_at   INTEGER NOT NULL DEFAULT 0
 		);`,
 
-		// Counting stats (leaderboards + info)
+		// Counting leaderboards
 		`CREATE TABLE IF NOT EXISTS counting_user_stats (
 			user_id         TEXT PRIMARY KEY,
 			username        TEXT NOT NULL DEFAULT '',
@@ -56,6 +55,7 @@ func Migrate(d *sql.DB) error {
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_counting_user_stats_counts ON counting_user_stats(counts DESC);`,
 
+		// Counting per-channel totals/highscore
 		`CREATE TABLE IF NOT EXISTS counting_channel_stats (
 			channel_id    TEXT PRIMARY KEY,
 			high_score    INTEGER NOT NULL DEFAULT 0,
@@ -63,7 +63,7 @@ func Migrate(d *sql.DB) error {
 			total_counted INTEGER NOT NULL DEFAULT 0
 		);`,
 
-		// Counting punishments (temporary role on mess-up)
+		// Counting punishments (temporary role)
 		`CREATE TABLE IF NOT EXISTS counting_punishments (
 			guild_id   TEXT NOT NULL,
 			user_id    TEXT NOT NULL,
@@ -73,7 +73,7 @@ func Migrate(d *sql.DB) error {
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_counting_punishments_expires ON counting_punishments(expires_at);`,
 
-		// Guild-scoped autoroles (keeps guild_id)
+		// Guild-scoped autoroles
 		`CREATE TABLE IF NOT EXISTS autoroles (
 			guild_id   TEXT NOT NULL,
 			channel_id TEXT NOT NULL,
@@ -98,7 +98,7 @@ func Migrate(d *sql.DB) error {
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_level_up_messages_user ON level_up_messages(user_id);`,
 
-		// ✅ NEW: join tracking (NO guild_id — single server design)
+		// Joins (single-server)
 		`CREATE TABLE IF NOT EXISTS user_joins (
 			user_id   TEXT PRIMARY KEY,
 			username  TEXT NOT NULL DEFAULT '',
@@ -114,8 +114,6 @@ func Migrate(d *sql.DB) error {
 	}
 
 	// Additive schema upgrades (safe on existing DBs)
-
-	// Counting schema upgrades
 	if err := ensureColumn(d, "counting_state", "prev_user_id", `ALTER TABLE counting_state ADD COLUMN prev_user_id TEXT NOT NULL DEFAULT ''`); err != nil {
 		return err
 	}
@@ -163,8 +161,59 @@ func ensureColumn(d *sql.DB, table, column, alterSQL string) error {
 	return err
 }
 
+// hasColumn checks whether a column exists in a table using PRAGMA table_info.
+// IMPORTANT: PRAGMA doesn't support binding table names as params, so we validate identifiers.
+func hasColumn(d *sql.DB, table, column string) (bool, error) {
+	if !isSafeSQLiteIdent(table) {
+		return false, fmt.Errorf("unsafe table identifier: %q", table)
+	}
+	rows, err := d.Query(fmt.Sprintf(`PRAGMA table_info(%s);`, table))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	// PRAGMA table_info columns:
+	// cid, name, type, notnull, dflt_value, pk
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			typ       string
+			notnull   int
+			dfltValue sql.NullString
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dfltValue, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+func isSafeSQLiteIdent(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r == '_' {
+			continue
+		}
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func migrateUserXPToSingleServer(d *sql.DB) error {
-	// If user_xp has guild_id, rebuild to remove it.
 	hasGuild, err := hasColumn(d, "user_xp", "guild_id")
 	if err != nil {
 		return err
@@ -176,7 +225,6 @@ func migrateUserXPToSingleServer(d *sql.DB) error {
 
 	hasUsername, _ := hasColumn(d, "user_xp", "username")
 
-	// Create new table
 	_, err = d.Exec(`CREATE TABLE IF NOT EXISTS user_xp_new (
 		user_id    TEXT PRIMARY KEY,
 		username   TEXT NOT NULL DEFAULT '',
@@ -187,7 +235,6 @@ func migrateUserXPToSingleServer(d *sql.DB) error {
 		return err
 	}
 
-	// Copy data
 	if hasUsername {
 		_, err = d.Exec(`INSERT INTO user_xp_new (user_id, username, xp, last_xp_at)
 			SELECT user_id, username, xp, last_xp_at FROM user_xp;`)
@@ -199,7 +246,6 @@ func migrateUserXPToSingleServer(d *sql.DB) error {
 		return err
 	}
 
-	// Swap
 	if _, err := d.Exec(`DROP TABLE user_xp;`); err != nil {
 		return err
 	}
@@ -216,11 +262,9 @@ func migrateLevelUpMessagesToSingleServer(d *sql.DB) error {
 		return err
 	}
 	if !hasGuild {
-		// Ensure username exists on older minimal schemas
 		return ensureColumn(d, "level_up_messages", "username", `ALTER TABLE level_up_messages ADD COLUMN username TEXT NOT NULL DEFAULT ''`)
 	}
 
-	// Create new table
 	_, err = d.Exec(`CREATE TABLE IF NOT EXISTS level_up_messages_new (
 		user_id    TEXT NOT NULL,
 		username   TEXT NOT NULL DEFAULT '',
@@ -235,14 +279,12 @@ func migrateLevelUpMessagesToSingleServer(d *sql.DB) error {
 		return err
 	}
 
-	// Copy data (ignore guild_id)
 	_, err = d.Exec(`INSERT INTO level_up_messages_new (user_id, username, level, channel_id, message_id, content, created_at)
 		SELECT user_id, username, level, channel_id, message_id, content, created_at FROM level_up_messages;`)
 	if err != nil {
 		return err
 	}
 
-	// Swap
 	if _, err := d.Exec(`DROP TABLE level_up_messages;`); err != nil {
 		return err
 	}
