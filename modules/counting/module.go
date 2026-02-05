@@ -44,8 +44,11 @@ func New(countingChannelID, triosChannelID, ruinedRoleID string, ruinedFor time.
 func (m *Module) Name() string { return "counting" }
 
 func (m *Module) Register(s *discordgo.Session) error {
+	// Slash commands are implemented in commands.go
 	s.AddHandler(m.onReady)
 	s.AddHandler(m.onInteractionCreate)
+
+	// Counting message handler
 	s.AddHandler(m.onMessageCreate)
 	return nil
 }
@@ -218,11 +221,7 @@ func (m *Module) applyCount(mode channelMode, guildID, channelID, userID, userna
 		if err := tx.Commit(); err != nil {
 			return applyResult{OK: false}, err
 		}
-		return applyResult{
-			OK:       false,
-			RuinedAt: lastCount,
-			Reason:   "Wrong number.",
-		}, nil
+		return applyResult{OK: false, RuinedAt: lastCount, Reason: "Wrong number."}, nil
 	}
 
 	// Validate spacing
@@ -235,11 +234,7 @@ func (m *Module) applyCount(mode channelMode, guildID, channelID, userID, userna
 			if err := tx.Commit(); err != nil {
 				return applyResult{OK: false}, err
 			}
-			return applyResult{
-				OK:       false,
-				RuinedAt: lastCount,
-				Reason:   "You can't count twice in a row.",
-			}, nil
+			return applyResult{OK: false, RuinedAt: lastCount, Reason: "You can't count twice in a row."}, nil
 		}
 	case modeTrios:
 		if (lastUser != "" && userID == lastUser) || (prevUser != "" && userID == prevUser) {
@@ -249,16 +244,13 @@ func (m *Module) applyCount(mode channelMode, guildID, channelID, userID, userna
 			if err := tx.Commit(); err != nil {
 				return applyResult{OK: false}, err
 			}
-			return applyResult{
-				OK:       false,
-				RuinedAt: lastCount,
-				Reason:   "In trios you must wait for 2 other people to count.",
-			}, nil
+			return applyResult{OK: false, RuinedAt: lastCount, Reason: "In trios you must wait for 2 other people to count."}, nil
 		}
 	}
 
-	// Success: upsert and shift history
 	now := time.Now().Unix()
+
+	// Success: upsert and shift history (prev <- last, last <- current)
 	_, err = tx.Exec(
 		`INSERT INTO counting_state (channel_id, last_count, last_user_id, prev_user_id, updated_at)
 		 VALUES (?, ?, ?, ?, ?)
@@ -273,7 +265,7 @@ func (m *Module) applyCount(mode channelMode, guildID, channelID, userID, userna
 		return applyResult{OK: false}, err
 	}
 
-	// ✅ Per-channel per-user stats (v2)
+	// ✅ Per-channel per-user stats
 	username = strings.TrimSpace(username)
 	_, err = tx.Exec(
 		`INSERT INTO counting_user_stats_v2 (channel_id, user_id, username, counts, last_counted_at)
@@ -334,7 +326,7 @@ func (m *Module) punish(s *discordgo.Session, guildID, userID string) {
 		return
 	}
 
-	// Assign role
+	// Assign role (requires Manage Roles and role hierarchy)
 	if err := s.GuildMemberRoleAdd(guildID, userID, m.ruinedRoleID); err != nil {
 		log.Printf("[counting] failed to add ruined role: %v", err)
 	}
@@ -380,8 +372,9 @@ func (m *Module) cleanupExpired(s *discordgo.Session) {
 	type item struct {
 		guildID string
 		userID  string
-		roleID  string	string
+		roleID  string
 	}
+
 	var items []item
 	for rows.Next() {
 		var it item
