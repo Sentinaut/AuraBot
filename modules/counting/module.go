@@ -15,7 +15,7 @@ import (
 
 const (
 	reactOK        = "✅"
-	reactHighScore = "☑️"
+	reactHighScore = "🟩✅"
 	reactBad       = "❌"
 	reactHundred   = "💯"
 )
