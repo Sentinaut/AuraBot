@@ -3,7 +3,6 @@ package counting
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"log"
 	"strconv"
 	"strings"
@@ -32,8 +31,6 @@ type Module struct {
 
 	ruinedRoleID string
 	ruinedFor    time.Duration
-
-	stop chan struct{}
 }
 
 func New(countingChannelID, triosChannelID, ruinedRoleID string, ruinedFor time.Duration, db *sql.DB) *Module {
@@ -43,7 +40,6 @@ func New(countingChannelID, triosChannelID, ruinedRoleID string, ruinedFor time.
 		triosChannelID:    strings.TrimSpace(triosChannelID),
 		ruinedRoleID:      strings.TrimSpace(ruinedRoleID),
 		ruinedFor:         ruinedFor,
-		stop:              make(chan struct{}),
 	}
 }
 
@@ -135,6 +131,7 @@ func parseLeadingInt(s string) (int64, bool) {
 	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
 		i++
 	}
+
 	n, err := strconv.ParseInt(s[:i], 10, 64)
 	return n, err == nil
 }
