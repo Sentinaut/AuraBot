@@ -47,6 +47,16 @@ func Migrate(d *sql.DB) error {
 			updated_at   INTEGER NOT NULL DEFAULT 0
 		);`,
 
+		// Counting punishments (temporary role on mess-up)
+		`CREATE TABLE IF NOT EXISTS counting_punishments (
+			guild_id   TEXT NOT NULL,
+			user_id    TEXT NOT NULL,
+			role_id    TEXT NOT NULL,
+			expires_at INTEGER NOT NULL,
+			PRIMARY KEY (guild_id, user_id, role_id)
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_counting_punishments_expires ON counting_punishments(expires_at);`,
+
 		// Guild-scoped autoroles (keeps guild_id)
 		`CREATE TABLE IF NOT EXISTS autoroles (
 			guild_id   TEXT NOT NULL,
@@ -89,6 +99,14 @@ func Migrate(d *sql.DB) error {
 
 	// Additive schema upgrades (safe on existing DBs)
 
+	// Counting schema upgrades
+	if err := ensureColumn(d, "counting_state", "prev_user_id", `ALTER TABLE counting_state ADD COLUMN prev_user_id TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if err := ensureColumn(d, "counting_state", "updated_at", `ALTER TABLE counting_state ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return err
+	}
+
 	if err := ensureColumn(d, "starboard_posts", "author_id", `ALTER TABLE starboard_posts ADD COLUMN author_id TEXT NOT NULL DEFAULT ''`); err != nil {
 		return err
 	}
@@ -111,6 +129,7 @@ func Migrate(d *sql.DB) error {
 	_, _ = d.Exec(`CREATE INDEX IF NOT EXISTS idx_user_xp_xp ON user_xp(xp DESC);`)
 	_, _ = d.Exec(`CREATE INDEX IF NOT EXISTS idx_level_up_messages_user ON level_up_messages(user_id);`)
 	_, _ = d.Exec(`CREATE INDEX IF NOT EXISTS idx_user_joins_joined_at ON user_joins(joined_at);`)
+	_, _ = d.Exec(`CREATE INDEX IF NOT EXISTS idx_counting_punishments_expires ON counting_punishments(expires_at);`)
 
 	return nil
 }
@@ -245,12 +264,12 @@ func hasColumn(d *sql.DB, table, column string) (bool, error) {
 	defer rows.Close()
 
 	var (
-		cid        int
-		name       string
-		typ        string
-		notnull    int
-		dfltValue  any
-		pk         int
+		cid       int
+		name      string
+		typ       string
+		notnull   int
+		dfltValue any
+		pk        int
 	)
 	for rows.Next() {
 		if err := rows.Scan(&cid, &name, &typ, &notnull, &dfltValue, &pk); err != nil {
