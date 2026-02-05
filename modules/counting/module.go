@@ -3,6 +3,7 @@ package counting
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
 	"strconv"
 	"strings"
@@ -31,6 +32,8 @@ type Module struct {
 
 	ruinedRoleID string
 	ruinedFor    time.Duration
+
+	stop chan struct{}
 }
 
 func New(countingChannelID, triosChannelID, ruinedRoleID string, ruinedFor time.Duration, db *sql.DB) *Module {
@@ -40,22 +43,51 @@ func New(countingChannelID, triosChannelID, ruinedRoleID string, ruinedFor time.
 		triosChannelID:    strings.TrimSpace(triosChannelID),
 		ruinedRoleID:      strings.TrimSpace(ruinedRoleID),
 		ruinedFor:         ruinedFor,
+		stop:              make(chan struct{}),
 	}
 }
 
 func (m *Module) Name() string { return "counting" }
 
 func (m *Module) Register(s *discordgo.Session) error {
+	// Slash commands are implemented in commands.go
+	s.AddHandler(m.onReady)
+	s.AddHandler(m.onInteractionCreate)
+
+	// Counting message handler
 	s.AddHandler(m.onMessageCreate)
 	return nil
 }
 
 func (m *Module) Start(ctx context.Context, s *discordgo.Session) error {
+	// Background expiry cleanup (role removals)
+	go func() {
+		t := time.NewTicker(5 * time.Minute)
+		defer t.Stop()
+
+		// run once at startup
+		m.cleanupExpired(s)
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-m.stop:
+				return
+			case <-t.C:
+				m.cleanupExpired(s)
+			}
+		}
+	}()
+
 	return nil
 }
 
 func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreate) {
-	if e == nil || e.Message == nil || e.Author == nil || e.Author.Bot {
+	if e == nil || e.Message == nil || e.Author == nil {
+		return
+	}
+	if e.Author.Bot {
 		return
 	}
 
@@ -66,41 +98,53 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 
 	n, ok := parseLeadingInt(e.Content)
 	if !ok {
+		// Not a counting attempt; ignore.
 		return
 	}
 
-	res, err := m.applyCount(mode, e.ChannelID, e.Author.ID, n)
+	res, err := m.applyCount(mode, e.GuildID, e.ChannelID, e.Author.ID, e.Author.Username, n)
 	if err != nil {
-		log.Printf("[counting] error: %v", err)
+		log.Printf("[counting] apply error: %v", err)
 		_ = s.MessageReactionAdd(e.ChannelID, e.ID, reactBad)
 		return
 	}
 
-	if !res.OK {
-		_ = s.MessageReactionAdd(e.ChannelID, e.ID, reactBad)
+	if res.OK {
+		// Highscore tick vs normal tick
+		if res.HighScore {
+			_ = s.MessageReactionAdd(e.ChannelID, e.ID, reactHighScore)
+		} else {
+			_ = s.MessageReactionAdd(e.ChannelID, e.ID, reactOK)
+		}
+
+		// 100
+		if res.Hit100 {
+			_ = s.MessageReactionAdd(e.ChannelID, e.ID, reactHundred)
+		}
+
+		// 200 / 500 / 1000 custom emojis
+		switch res.Count {
+		case 200:
+			_ = s.MessageReactionAdd(e.ChannelID, e.ID, emoji200)
+		case 500:
+			_ = s.MessageReactionAdd(e.ChannelID, e.ID, emoji500)
+		case 1000:
+			_ = s.MessageReactionAdd(e.ChannelID, e.ID, emoji1000)
+		}
+
 		return
 	}
 
-	// Base reaction
-	if res.HighScore {
-		_ = s.MessageReactionAdd(e.ChannelID, e.ID, reactHighScore)
-	} else {
-		_ = s.MessageReactionAdd(e.ChannelID, e.ID, reactOK)
+	_ = s.MessageReactionAdd(e.ChannelID, e.ID, reactBad)
+
+	// Announce and punish
+	if res.RuinedAt > 0 {
+		msg := fmt.Sprintf("<@%s> **RUINED IT AT %d!!** Next number is **1**. %s",
+			e.Author.ID, res.RuinedAt, res.Reason)
+		_, _ = s.ChannelMessageSend(e.ChannelID, msg)
 	}
 
-	// Milestones
-	if res.Hit100 {
-		_ = s.MessageReactionAdd(e.ChannelID, e.ID, reactHundred)
-	}
-
-	switch res.Count {
-	case 200:
-		_ = s.MessageReactionAdd(e.ChannelID, e.ID, emoji200)
-	case 500:
-		_ = s.MessageReactionAdd(e.ChannelID, e.ID, emoji500)
-	case 1000:
-		_ = s.MessageReactionAdd(e.ChannelID, e.ID, emoji1000)
-	}
+	m.punish(s, e.GuildID, e.Author.ID)
 }
 
 type channelMode int
@@ -112,10 +156,10 @@ const (
 )
 
 func (m *Module) channelMode(channelID string) channelMode {
-	if channelID == m.countingChannelID {
+	if m.countingChannelID != "" && channelID == m.countingChannelID {
 		return modeNormal
 	}
-	if channelID == m.triosChannelID {
+	if m.triosChannelID != "" && channelID == m.triosChannelID {
 		return modeTrios
 	}
 	return modeDisabled
@@ -131,91 +175,144 @@ func parseLeadingInt(s string) (int64, bool) {
 	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
 		i++
 	}
-
 	n, err := strconv.ParseInt(s[:i], 10, 64)
 	return n, err == nil
 }
 
 type applyResult struct {
-	OK        bool
+	OK       bool
+	RuinedAt int64
+	Reason   string
+
 	HighScore bool
 	Hit100    bool
 	Count     int64
 }
 
-func (m *Module) applyCount(mode channelMode, channelID, userID string, newCount int64) (applyResult, error) {
+func (m *Module) applyCount(mode channelMode, guildID, channelID, userID, username string, newCount int64) (applyResult, error) {
+	if m.db == nil {
+		return applyResult{OK: false}, sql.ErrConnDone
+	}
+
 	tx, err := m.db.Begin()
 	if err != nil {
-		return applyResult{}, err
+		return applyResult{OK: false}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var lastCount int64
-	var lastUser, prevUser string
+	var lastUser string
+	var prevUser string
 
 	err = tx.QueryRow(
 		`SELECT last_count, last_user_id, prev_user_id
 		 FROM counting_state
-		 WHERE channel_id = ?`,
+		 WHERE channel_id = ?;`,
 		channelID,
 	).Scan(&lastCount, &lastUser, &prevUser)
 
-	if err == sql.ErrNoRows {
-		lastCount = 0
-	} else if err != nil {
-		return applyResult{}, err
+	if err != nil {
+		if err == sql.ErrNoRows {
+			lastCount = 0
+			lastUser = ""
+			prevUser = ""
+		} else {
+			return applyResult{OK: false}, err
+		}
 	}
 
-	if newCount != lastCount+1 {
-		_, _ = tx.Exec(`DELETE FROM counting_state WHERE channel_id = ?`, channelID)
-		_ = tx.Commit()
-		return applyResult{OK: false}, nil
+	expected := lastCount + 1
+
+	// Validate number
+	if newCount != expected {
+		if err := m.resetState(tx, channelID); err != nil {
+			return applyResult{OK: false}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return applyResult{OK: false}, err
+		}
+		return applyResult{OK: false, RuinedAt: lastCount, Reason: "Wrong number."}, nil
 	}
 
-	if mode == modeNormal && userID == lastUser {
-		_, _ = tx.Exec(`DELETE FROM counting_state WHERE channel_id = ?`, channelID)
-		_ = tx.Commit()
-		return applyResult{OK: false}, nil
+	// Validate spacing
+	switch mode {
+	case modeNormal:
+		if lastUser != "" && userID == lastUser {
+			if err := m.resetState(tx, channelID); err != nil {
+				return applyResult{OK: false}, err
+			}
+			if err := tx.Commit(); err != nil {
+				return applyResult{OK: false}, err
+			}
+			return applyResult{OK: false, RuinedAt: lastCount, Reason: "You can't count twice in a row."}, nil
+		}
+	case modeTrios:
+		if (lastUser != "" && userID == lastUser) || (prevUser != "" && userID == prevUser) {
+			if err := m.resetState(tx, channelID); err != nil {
+				return applyResult{OK: false}, err
+			}
+			if err := tx.Commit(); err != nil {
+				return applyResult{OK: false}, err
+			}
+			return applyResult{OK: false, RuinedAt: lastCount, Reason: "In trios you must wait for 2 other people to count."}, nil
+		}
 	}
 
-	if mode == modeTrios && (userID == lastUser || userID == prevUser) {
-		_, _ = tx.Exec(`DELETE FROM counting_state WHERE channel_id = ?`, channelID)
-		_ = tx.Commit()
-		return applyResult{OK: false}, nil
-	}
-
+	// Read previous high score BEFORE we update it
 	var prevHigh int64
 	_ = tx.QueryRow(
-		`SELECT high_score FROM counting_channel_stats WHERE channel_id = ?`,
+		`SELECT high_score FROM counting_channel_stats WHERE channel_id = ?;`,
 		channelID,
 	).Scan(&prevHigh)
 
+	now := time.Now().Unix()
+
+	// Success: upsert and shift history (prev <- last, last <- current)
 	_, err = tx.Exec(
-		`INSERT INTO counting_state (channel_id, last_count, last_user_id, prev_user_id)
-		 VALUES (?, ?, ?, ?)
+		`INSERT INTO counting_state (channel_id, last_count, last_user_id, prev_user_id, updated_at)
+		 VALUES (?, ?, ?, ?, ?)
 		 ON CONFLICT(channel_id) DO UPDATE SET
 			last_count = excluded.last_count,
 			prev_user_id = counting_state.last_user_id,
-			last_user_id = excluded.last_user_id`,
-		channelID, newCount, userID, prevUser,
+			last_user_id = excluded.last_user_id,
+			updated_at = excluded.updated_at;`,
+		channelID, newCount, userID, prevUser, now,
 	)
 	if err != nil {
-		return applyResult{}, err
+		return applyResult{OK: false}, err
 	}
 
+	// ✅ Per-channel per-user stats
+	username = strings.TrimSpace(username)
 	_, err = tx.Exec(
-		`INSERT INTO counting_channel_stats (channel_id, high_score)
-		 VALUES (?, ?)
-		 ON CONFLICT(channel_id) DO UPDATE SET
-			high_score = MAX(high_score, excluded.high_score)`,
-		channelID, newCount,
+		`INSERT INTO counting_user_stats_v2 (channel_id, user_id, username, counts, last_counted_at)
+		 VALUES (?, ?, ?, 1, ?)
+		 ON CONFLICT(channel_id, user_id) DO UPDATE SET
+			username = CASE WHEN excluded.username != '' THEN excluded.username ELSE counting_user_stats_v2.username END,
+			counts = counting_user_stats_v2.counts + 1,
+			last_counted_at = excluded.last_counted_at;`,
+		channelID, userID, username, now,
 	)
 	if err != nil {
-		return applyResult{}, err
+		return applyResult{OK: false}, err
+	}
+
+	// ✅ Per-channel totals + highscore
+	_, err = tx.Exec(
+		`INSERT INTO counting_channel_stats (channel_id, high_score, high_score_at, total_counted)
+		 VALUES (?, ?, ?, 1)
+		 ON CONFLICT(channel_id) DO UPDATE SET
+			total_counted = counting_channel_stats.total_counted + 1,
+			high_score = CASE WHEN excluded.high_score > counting_channel_stats.high_score THEN excluded.high_score ELSE counting_channel_stats.high_score END,
+			high_score_at = CASE WHEN excluded.high_score > counting_channel_stats.high_score THEN excluded.high_score_at ELSE counting_channel_stats.high_score_at END;`,
+		channelID, newCount, now,
+	)
+	if err != nil {
+		return applyResult{OK: false}, err
 	}
 
 	if err := tx.Commit(); err != nil {
-		return applyResult{}, err
+		return applyResult{OK: false}, err
 	}
 
 	return applyResult{
