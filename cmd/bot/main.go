@@ -8,6 +8,7 @@ import (
 	"github.com/Sentinaut/AuraBot/internal/bot"
 	"github.com/Sentinaut/AuraBot/internal/db"
 	"github.com/Sentinaut/AuraBot/modules/autoroles"
+	"github.com/Sentinaut/AuraBot/modules/counting"
 	"github.com/Sentinaut/AuraBot/modules/levelling"
 	"github.com/Sentinaut/AuraBot/modules/starboard"
 	"github.com/Sentinaut/AuraBot/modules/votingthreads"
@@ -28,6 +29,10 @@ const (
 	ChannelOnboarding = "1465095995066024031" // onboarding channel (no-role + staff)
 
 	AutoRoleID = "1424750509683904615" // Members (granted AFTER username confirmed)
+
+	// 🔢 Counting
+	ChannelCounting      = "0" // TODO: set #counting channel id
+	ChannelCountingTrios = "0" // TODO: set #counting-trios channel id
 )
 
 // ⭐ Channels that count toward starboard (manual stars)
@@ -100,6 +105,9 @@ func main() {
 
 		// ⭐ Levelling / XP system
 		levelling.New(XPChannels, database.DB),
+
+		// 🔢 Counting (normal + trios)
+		counting.New(ChannelCounting, ChannelCountingTrios, database.DB),
 
 		// ✅ Autoroles (reaction roles)
 		autoroles.New(database.DB),
