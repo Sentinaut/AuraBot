@@ -15,7 +15,7 @@ import (
 
 const (
 	reactOK        = "✅"
-	reactHighScore = "☑️" // blue tick for highscore
+	reactHighScore = "☑️"
 	reactBad       = "❌"
 	reactHundred   = "💯"
 
@@ -247,6 +247,21 @@ func (m *Module) applyCount(mode channelMode, guildID, channelID, userID, userna
 		return applyResult{}, err
 	}
 
+	// ✅ THIS is what your leaderboard uses
+	username = strings.TrimSpace(username)
+	_, err = tx.Exec(
+		`INSERT INTO counting_user_stats_v2 (channel_id, user_id, username, counts, last_counted_at)
+		 VALUES (?, ?, ?, 1, ?)
+		 ON CONFLICT(channel_id, user_id) DO UPDATE SET
+			username = CASE WHEN excluded.username != '' THEN excluded.username ELSE counting_user_stats_v2.username END,
+			counts = counting_user_stats_v2.counts + 1,
+			last_counted_at = excluded.last_counted_at;`,
+		channelID, userID, username, now,
+	)
+	if err != nil {
+		return applyResult{}, err
+	}
+
 	_, err = tx.Exec(
 		`INSERT INTO counting_channel_stats (channel_id, high_score, high_score_at, total_counted)
 		 VALUES (?, ?, ?, 1)
@@ -269,113 +284,4 @@ func (m *Module) applyCount(mode channelMode, guildID, channelID, userID, userna
 		HighScore: newCount > prevHigh,
 		Hit100:    newCount == 100,
 	}, nil
-}
-
-/* =========================
-   Missing helpers (minimal)
-   ========================= */
-
-// resetState resets the channel counter so the next correct number is 1.
-func (m *Module) resetState(tx *sql.Tx, channelID string) error {
-	now := time.Now().Unix()
-	_, err := tx.Exec(
-		`INSERT INTO counting_state (channel_id, last_count, last_user_id, prev_user_id, updated_at)
-		 VALUES (?, 0, '', '', ?)
-		 ON CONFLICT(channel_id) DO UPDATE SET
-			last_count = 0,
-			last_user_id = '',
-			prev_user_id = '',
-			updated_at = excluded.updated_at;`,
-		channelID, now,
-	)
-	return err
-}
-
-// punish assigns the "ruined" role and records an expiry in counting_punishments.
-func (m *Module) punish(s *discordgo.Session, guildID, userID string) {
-	if strings.TrimSpace(guildID) == "" || strings.TrimSpace(userID) == "" {
-		return
-	}
-	if strings.TrimSpace(m.ruinedRoleID) == "" || m.ruinedFor <= 0 {
-		return
-	}
-
-	// Add role (bot needs Manage Roles and role hierarchy)
-	if err := s.GuildMemberRoleAdd(guildID, userID, m.ruinedRoleID); err != nil {
-		log.Printf("[counting] failed to add ruined role: %v", err)
-	}
-
-	expiresAt := time.Now().Add(m.ruinedFor).Unix()
-
-	// Store/extend expiry
-	if m.db == nil {
-		return
-	}
-	_, err := m.db.Exec(
-		`INSERT INTO counting_punishments (guild_id, user_id, role_id, expires_at)
-		 VALUES (?, ?, ?, ?)
-		 ON CONFLICT(guild_id, user_id, role_id) DO UPDATE SET
-			expires_at = CASE
-				WHEN excluded.expires_at > counting_punishments.expires_at THEN excluded.expires_at
-				ELSE counting_punishments.expires_at
-			END;`,
-		guildID, userID, m.ruinedRoleID, expiresAt,
-	)
-	if err != nil {
-		log.Printf("[counting] failed to store punishment expiry: %v", err)
-	}
-}
-
-// cleanupExpired removes expired ruined roles and deletes rows from counting_punishments.
-func (m *Module) cleanupExpired(s *discordgo.Session) {
-	if m.db == nil {
-		return
-	}
-
-	now := time.Now().Unix()
-
-	rows, err := m.db.Query(
-		`SELECT guild_id, user_id, role_id
-		 FROM counting_punishments
-		 WHERE expires_at <= ?;`,
-		now,
-	)
-	if err != nil {
-		log.Printf("[counting] cleanup query error: %v", err)
-		return
-	}
-	defer rows.Close()
-
-	type row struct {
-		guildID string
-		userID  string
-		roleID  string
-	}
-
-	var expired []row
-	for rows.Next() {
-		var r row
-		if err := rows.Scan(&r.guildID, &r.userID, &r.roleID); err != nil {
-			log.Printf("[counting] cleanup scan error: %v", err)
-			return
-		}
-		expired = append(expired, r)
-	}
-	if err := rows.Err(); err != nil {
-		log.Printf("[counting] cleanup rows error: %v", err)
-		return
-	}
-
-	for _, r := range expired {
-		if r.guildID == "" || r.userID == "" || r.roleID == "" {
-			continue
-		}
-		if err := s.GuildMemberRoleRemove(r.guildID, r.userID, r.roleID); err != nil {
-			log.Printf("[counting] failed to remove expired role (continuing): %v", err)
-		}
-		_, _ = m.db.Exec(
-			`DELETE FROM counting_punishments WHERE guild_id = ? AND user_id = ? AND role_id = ?;`,
-			r.guildID, r.userID, r.roleID,
-		)
-	}
 }
