@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/Sentinaut/AuraBot/internal/bot"
 	"github.com/Sentinaut/AuraBot/internal/db"
@@ -31,8 +32,10 @@ const (
 	AutoRoleID = "1424750509683904615" // Members (granted AFTER username confirmed)
 
 	// 🔢 Counting
-	ChannelCounting      = "0" // TODO: set #counting channel id
-	ChannelCountingTrios = "0" // TODO: set #counting-trios channel id
+	ChannelCounting      = "1466485635467706511" // #counting
+	ChannelCountingTrios = "1468983165560557651" // #counting-trios
+
+	CountingRuinedRoleID = "1456837115177341119" // role given on mess-up
 )
 
 // ⭐ Channels that count toward starboard (manual stars)
@@ -106,8 +109,8 @@ func main() {
 		// ⭐ Levelling / XP system
 		levelling.New(XPChannels, database.DB),
 
-		// 🔢 Counting (normal + trios)
-		counting.New(ChannelCounting, ChannelCountingTrios, database.DB),
+		// 🔢 Counting (normal + trios) + ruined role for 16 hours
+		counting.New(ChannelCounting, ChannelCountingTrios, CountingRuinedRoleID, 16*time.Hour, database.DB),
 
 		// ✅ Autoroles (reaction roles)
 		autoroles.New(database.DB),
