@@ -65,7 +65,11 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 	if res.RuinedAt > 0 {
 		// Custom reaction for specific user
 		if e.Author.ID == customRuinerUserID {
-			msg := fmt.Sprintf("<@%s> ruined the count once again... shock", e.Author.ID)
+			msg := fmt.Sprintf(
+				"<@%s> ruined the count again... shock.\nThe count was **%d**. Next number is **1**.",
+				e.Author.ID,
+				res.RuinedAt,
+			)
 			_, _ = s.ChannelMessageSend(e.ChannelID, msg)
 			_, _ = s.ChannelMessageSend(e.ChannelID, customRuinerGIFURL)
 		} else {
