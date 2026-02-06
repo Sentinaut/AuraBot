@@ -61,7 +61,7 @@ func (m *Module) Register(s *discordgo.Session) error {
 	// Counting message handler
 	s.AddHandler(m.onMessageCreate)
 
-	// Edited message handler (latest count edits)
+	// Edited message handler (latest count edits + edits-to-number)
 	s.AddHandler(m.onMessageUpdate)
 
 	// Remove user-added tick reactions in counting channels
@@ -177,7 +177,9 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 	m.punish(s, e.GuildID, e.Author.ID)
 }
 
-// If the latest count message is edited, call it out and tell the next number.
+// If a message is edited in a counting channel:
+// - If it becomes a number (e.g. "hello" -> "27"), announce it and remind the next number.
+// - If it is the latest count message, also announce that they edited the count.
 func (m *Module) onMessageUpdate(s *discordgo.Session, e *discordgo.MessageUpdate) {
 	if e == nil {
 		return
@@ -189,28 +191,25 @@ func (m *Module) onMessageUpdate(s *discordgo.Session, e *discordgo.MessageUpdat
 		return
 	}
 
-	// Determine author safely (update events can be partial)
-	var authorID string
-	if e.Author != nil {
-		if e.Author.Bot {
-			return
-		}
-		authorID = e.Author.ID
-	} else {
-		// best-effort fetch message to identify user
-		msg, err := s.ChannelMessage(e.ChannelID, e.ID)
-		if err != nil || msg == nil || msg.Author == nil {
-			return
-		}
-		if msg.Author.Bot {
-			return
-		}
-		authorID = msg.Author.ID
+	// Always fetch the message so we have the final content (update events can be partial)
+	msg, err := s.ChannelMessage(e.ChannelID, e.ID)
+	if err != nil || msg == nil || msg.Author == nil {
+		return
+	}
+	if msg.Author.Bot {
+		return
 	}
 
+	// Only care if the edited message NOW starts with a number
+	editedNum, ok := parseLeadingInt(msg.Content)
+	if !ok {
+		return
+	}
+
+	// Read current channel state so we can say what the next number is
 	var lastCount int64
 	var lastMsgID string
-	err := m.db.QueryRow(
+	err = m.db.QueryRow(
 		`SELECT last_count, last_message_id
 		 FROM counting_state
 		 WHERE channel_id = ?;`,
@@ -220,13 +219,27 @@ func (m *Module) onMessageUpdate(s *discordgo.Session, e *discordgo.MessageUpdat
 		return
 	}
 
-	if lastMsgID == "" || lastMsgID != e.ID {
+	next := lastCount + 1
+
+	// If they edited the latest count message, call it out specifically
+	if lastMsgID != "" && lastMsgID == e.ID {
+		txt := fmt.Sprintf(
+			"<@%s> has edited their count because they think it's funny.\nThe next number is **%d**",
+			msg.Author.ID,
+			next,
+		)
+		_, _ = s.ChannelMessageSend(e.ChannelID, txt)
 		return
 	}
 
-	next := lastCount + 1
-	msg := fmt.Sprintf("<@%s> has edited their count because they think it's funny.\nThe next number is **%d**", authorID, next)
-	_, _ = s.ChannelMessageSend(e.ChannelID, msg)
+	// Otherwise, they edited SOME message into a number (e.g. "hello" -> "27")
+	txt := fmt.Sprintf(
+		"<@%s> has edited their message to **%d**.\nThe next number is **%d**",
+		msg.Author.ID,
+		editedNum,
+		next,
+	)
+	_, _ = s.ChannelMessageSend(e.ChannelID, txt)
 }
 
 // Remove user-added ✅ / ☑️ so nobody can fake a valid count.
