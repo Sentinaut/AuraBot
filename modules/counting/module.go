@@ -7,6 +7,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -25,7 +26,7 @@ const (
 
 	// Custom "ruined the count" user + media
 	customRuinerUserID = "614628933337350149"
-	customRuinerGIFURL = "https://media.tenor.com/QVe9jYKuGawAAAPo/sydney-trains-scrapping.mp4"
+	customRuinerGIFURL = "https://tenor.com/view/sydney-trains-scrapping-s-set-sad-double-decker-gif-16016618"
 )
 
 type Module struct {
@@ -38,6 +39,10 @@ type Module struct {
 	ruinedFor    time.Duration
 
 	stop chan struct{}
+
+	// Prevent race conditions when multiple messages arrive close together.
+	locksMu      sync.Mutex
+	channelLocks map[string]*sync.Mutex
 }
 
 func New(countingChannelID, triosChannelID, ruinedRoleID string, ruinedFor time.Duration, db *sql.DB) *Module {
@@ -48,6 +53,8 @@ func New(countingChannelID, triosChannelID, ruinedRoleID string, ruinedFor time.
 		ruinedRoleID:      strings.TrimSpace(ruinedRoleID),
 		ruinedFor:         ruinedFor,
 		stop:              make(chan struct{}),
+
+		channelLocks: make(map[string]*sync.Mutex),
 	}
 }
 
@@ -95,6 +102,21 @@ func (m *Module) Start(ctx context.Context, s *discordgo.Session) error {
 	return nil
 }
 
+func (m *Module) lockForChannel(channelID string) *sync.Mutex {
+	m.locksMu.Lock()
+	defer m.locksMu.Unlock()
+
+	if m.channelLocks == nil {
+		m.channelLocks = make(map[string]*sync.Mutex)
+	}
+	if l, ok := m.channelLocks[channelID]; ok {
+		return l
+	}
+	l := &sync.Mutex{}
+	m.channelLocks[channelID] = l
+	return l
+}
+
 func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreate) {
 	if e == nil || e.Message == nil || e.Author == nil {
 		return
@@ -113,6 +135,11 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 		// Not a counting attempt; ignore.
 		return
 	}
+
+	// Serialize counting logic per-channel to prevent SQLite race conditions.
+	lock := m.lockForChannel(e.ChannelID)
+	lock.Lock()
+	defer lock.Unlock()
 
 	res, err := m.applyCount(mode, e.GuildID, e.ChannelID, e.Author.ID, e.Author.Username, e.ID, n)
 	if err != nil {
@@ -149,7 +176,7 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 
 	_ = s.MessageReactionAdd(e.ChannelID, e.ID, reactBad)
 
-	// Announce and punish
+	// Announce and punish (punish only the author of THIS message)
 	if res.RuinedAt > 0 {
 		// Custom reaction for specific user
 		if e.Author.ID == customRuinerUserID {
