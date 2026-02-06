@@ -7,7 +7,6 @@ import (
 	"log"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	"unicode"
 
@@ -26,7 +25,7 @@ const (
 
 	// Custom "ruined the count" user + media
 	customRuinerUserID = "614628933337350149"
-	customRuinerGIFURL = "https://tenor.com/view/sydney-trains-scrapping-s-set-sad-double-decker-gif-16016618"
+	customRuinerGIFURL = "https://media.tenor.com/QVe9jYKuGawAAAPo/sydney-trains-scrapping.mp4"
 )
 
 type Module struct {
@@ -39,10 +38,6 @@ type Module struct {
 	ruinedFor    time.Duration
 
 	stop chan struct{}
-
-	// Prevent race conditions when multiple messages arrive close together.
-	locksMu      sync.Mutex
-	channelLocks map[string]*sync.Mutex
 }
 
 func New(countingChannelID, triosChannelID, ruinedRoleID string, ruinedFor time.Duration, db *sql.DB) *Module {
@@ -53,8 +48,6 @@ func New(countingChannelID, triosChannelID, ruinedRoleID string, ruinedFor time.
 		ruinedRoleID:      strings.TrimSpace(ruinedRoleID),
 		ruinedFor:         ruinedFor,
 		stop:              make(chan struct{}),
-
-		channelLocks: make(map[string]*sync.Mutex),
 	}
 }
 
@@ -67,6 +60,12 @@ func (m *Module) Register(s *discordgo.Session) error {
 
 	// Counting message handler
 	s.AddHandler(m.onMessageCreate)
+
+	// NEW: Edited message handler (latest count edits)
+	s.AddHandler(m.onMessageUpdate)
+
+	// NEW: Remove user-added tick reactions in counting channels
+	s.AddHandler(m.onMessageReactionAdd)
 
 	// Deleted message handlers
 	s.AddHandler(m.onMessageDelete)
@@ -102,21 +101,6 @@ func (m *Module) Start(ctx context.Context, s *discordgo.Session) error {
 	return nil
 }
 
-func (m *Module) lockForChannel(channelID string) *sync.Mutex {
-	m.locksMu.Lock()
-	defer m.locksMu.Unlock()
-
-	if m.channelLocks == nil {
-		m.channelLocks = make(map[string]*sync.Mutex)
-	}
-	if l, ok := m.channelLocks[channelID]; ok {
-		return l
-	}
-	l := &sync.Mutex{}
-	m.channelLocks[channelID] = l
-	return l
-}
-
 func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreate) {
 	if e == nil || e.Message == nil || e.Author == nil {
 		return
@@ -135,11 +119,6 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 		// Not a counting attempt; ignore.
 		return
 	}
-
-	// Serialize counting logic per-channel to prevent SQLite race conditions.
-	lock := m.lockForChannel(e.ChannelID)
-	lock.Lock()
-	defer lock.Unlock()
 
 	res, err := m.applyCount(mode, e.GuildID, e.ChannelID, e.Author.ID, e.Author.Username, e.ID, n)
 	if err != nil {
@@ -176,7 +155,7 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 
 	_ = s.MessageReactionAdd(e.ChannelID, e.ID, reactBad)
 
-	// Announce and punish (punish only the author of THIS message)
+	// Announce and punish
 	if res.RuinedAt > 0 {
 		// Custom reaction for specific user
 		if e.Author.ID == customRuinerUserID {
@@ -196,6 +175,91 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 	}
 
 	m.punish(s, e.GuildID, e.Author.ID)
+}
+
+// NEW: If the latest count message is edited, call it out and tell the next number.
+func (m *Module) onMessageUpdate(s *discordgo.Session, e *discordgo.MessageUpdate) {
+	if e == nil {
+		return
+	}
+	if m.channelMode(e.ChannelID) == modeDisabled {
+		return
+	}
+	if m.db == nil {
+		return
+	}
+
+	// Determine author safely (update events can be partial)
+	var authorID string
+	if e.Author != nil {
+		if e.Author.Bot {
+			return
+		}
+		authorID = e.Author.ID
+	} else {
+		// best-effort fetch message to identify user
+		msg, err := s.ChannelMessage(e.ChannelID, e.ID)
+		if err != nil || msg == nil || msg.Author == nil {
+			return
+		}
+		if msg.Author.Bot {
+			return
+		}
+		authorID = msg.Author.ID
+	}
+
+	var lastCount int64
+	var lastMsgID string
+	err := m.db.QueryRow(
+		`SELECT last_count, last_message_id
+		 FROM counting_state
+		 WHERE channel_id = ?;`,
+		e.ChannelID,
+	).Scan(&lastCount, &lastMsgID)
+	if err != nil {
+		return
+	}
+
+	if lastMsgID == "" || lastMsgID != e.ID {
+		return
+	}
+
+	next := lastCount + 1
+	msg := fmt.Sprintf("<@%s> has edited their count because they think it's funny.\nThe next number is **%d**", authorID, next)
+	_, _ = s.ChannelMessageSend(e.ChannelID, msg)
+}
+
+// NEW: Remove user-added ✅ / ☑️ so nobody can fake a valid count.
+func (m *Module) onMessageReactionAdd(s *discordgo.Session, e *discordgo.MessageReactionAdd) {
+	if e == nil {
+		return
+	}
+	if m.channelMode(e.ChannelID) == modeDisabled {
+		return
+	}
+
+	// If bot isn't known yet, just skip.
+	botID := ""
+	if s != nil && s.State != nil && s.State.User != nil {
+		botID = s.State.User.ID
+	}
+
+	// Only remove reactions added by non-bot users
+	if e.UserID == "" || (botID != "" && e.UserID == botID) {
+		return
+	}
+
+	emoji := ""
+	if e.Emoji != nil {
+		// Name will be "✅" etc for unicode emojis
+		emoji = e.Emoji.Name
+	}
+
+	// Remove user-added ticks (and high-score tick).
+	// (We keep ❌ alone; users can react with it if they want.)
+	if emoji == reactOK || emoji == reactHighScore {
+		_ = s.MessageReactionRemove(e.ChannelID, e.MessageID, emoji, e.UserID)
+	}
 }
 
 func (m *Module) onMessageDelete(s *discordgo.Session, e *discordgo.MessageDelete) {
