@@ -61,10 +61,10 @@ func (m *Module) Register(s *discordgo.Session) error {
 	// Counting message handler
 	s.AddHandler(m.onMessageCreate)
 
-	// NEW: Edited message handler (latest count edits)
+	// Edited message handler (latest count edits)
 	s.AddHandler(m.onMessageUpdate)
 
-	// NEW: Remove user-added tick reactions in counting channels
+	// Remove user-added tick reactions in counting channels
 	s.AddHandler(m.onMessageReactionAdd)
 
 	// Deleted message handlers
@@ -177,7 +177,7 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 	m.punish(s, e.GuildID, e.Author.ID)
 }
 
-// NEW: If the latest count message is edited, call it out and tell the next number.
+// If the latest count message is edited, call it out and tell the next number.
 func (m *Module) onMessageUpdate(s *discordgo.Session, e *discordgo.MessageUpdate) {
 	if e == nil {
 		return
@@ -229,7 +229,7 @@ func (m *Module) onMessageUpdate(s *discordgo.Session, e *discordgo.MessageUpdat
 	_, _ = s.ChannelMessageSend(e.ChannelID, msg)
 }
 
-// NEW: Remove user-added ✅ / ☑️ so nobody can fake a valid count.
+// Remove user-added ✅ / ☑️ so nobody can fake a valid count.
 func (m *Module) onMessageReactionAdd(s *discordgo.Session, e *discordgo.MessageReactionAdd) {
 	if e == nil {
 		return
@@ -249,16 +249,13 @@ func (m *Module) onMessageReactionAdd(s *discordgo.Session, e *discordgo.Message
 		return
 	}
 
-	emoji := ""
-	if e.Emoji != nil {
-		// Name will be "✅" etc for unicode emojis
-		emoji = e.Emoji.Name
-	}
+	// In this discordgo version, Emoji is a VALUE, not a pointer.
+	emojiName := e.Emoji.Name
 
 	// Remove user-added ticks (and high-score tick).
 	// (We keep ❌ alone; users can react with it if they want.)
-	if emoji == reactOK || emoji == reactHighScore {
-		_ = s.MessageReactionRemove(e.ChannelID, e.MessageID, emoji, e.UserID)
+	if emojiName == reactOK || emojiName == reactHighScore {
+		_ = s.MessageReactionRemove(e.ChannelID, e.MessageID, emojiName, e.UserID)
 	}
 }
 
