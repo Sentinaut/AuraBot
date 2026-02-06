@@ -264,7 +264,21 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 			}
 		}
 
-		// Delete parent message (deletes thread too)
+		// Delete the onboarding thread (and then the parent message).
+		// Note: deleting the parent message does NOT reliably remove the thread in Discord,
+		// so we explicitly delete the thread channel.
+		if _, err := s.ChannelDelete(sess.ThreadID); err != nil {
+			log.Printf("[welcoming] failed to delete onboarding thread: %v", err)
+
+			// Fallback: archive + lock the thread so it disappears from active threads.
+			archived := true
+			locked := true
+			_, _ = s.ChannelEditComplex(sess.ThreadID, &discordgo.ChannelEdit{
+				Archived: &archived,
+				Locked:   &locked,
+			})
+		}
+
 		if err := s.ChannelMessageDelete(m.onboardingChannelID, sess.ParentMsgID); err != nil {
 			log.Printf("[welcoming] failed to delete onboarding parent message: %v", err)
 		}
