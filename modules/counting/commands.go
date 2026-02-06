@@ -136,7 +136,22 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 				return
 			}
 
-			embed, err := m.buildCountingInfoEmbed(i.ChannelID)
+			// Determine server name for title
+			serverName := "Server"
+			if i.GuildID != "" {
+				if s.State != nil {
+					if g, err := s.State.Guild(i.GuildID); err == nil && g != nil && strings.TrimSpace(g.Name) != "" {
+						serverName = g.Name
+					}
+				}
+				if serverName == "Server" {
+					if g, err := s.Guild(i.GuildID); err == nil && g != nil && strings.TrimSpace(g.Name) != "" {
+						serverName = g.Name
+					}
+				}
+			}
+
+			embed, err := m.buildCountingInfoEmbed(i.ChannelID, serverName)
 			if err != nil {
 				respondEphemeral(s, i, "DB error reading counting info.")
 				return
@@ -318,7 +333,7 @@ func respondEphemeral(s *discordgo.Session, i *discordgo.InteractionCreate, msg 
    COUNTING INFO (per channel)
    ========================= */
 
-func (m *Module) buildCountingInfoEmbed(channelID string) (*discordgo.MessageEmbed, error) {
+func (m *Module) buildCountingInfoEmbed(channelID string, serverName string) (*discordgo.MessageEmbed, error) {
 	if m.db == nil {
 		return nil, sql.ErrConnDone
 	}
@@ -343,9 +358,17 @@ func (m *Module) buildCountingInfoEmbed(channelID string) (*discordgo.MessageEmb
 		channelID,
 	).Scan(&highScore, &highAt, &total)
 
-	title := "PlayAura"
+	serverName = strings.TrimSpace(serverName)
+	if serverName == "" {
+		serverName = "Server"
+	}
+
+	// Title rules:
+	// - normal: {servername} (Standard)
+	// - trios:  {servername} (Trios)
+	title := fmt.Sprintf("%s (Standard)", serverName)
 	if channelID == m.triosChannelID {
-		title = "PlayAura (Trios)"
+		title = fmt.Sprintf("%s (Trios)", serverName)
 	}
 
 	lastBy := "Unknown"
