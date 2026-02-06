@@ -22,7 +22,7 @@ const (
 
 	// Custom "ruined the count" user + media
 	customRuinerUserID = "614628933337350149"
-	customRuinerGIFURL = "https://media.tenor.com/QVe9jYKuGawAAAPo/sydney-trains-scrapping.mp4"
+	customRuinerGIFURL = "https://tenor.com/view/sydney-trains-scrapping-s-set-sad-double-decker-gif-16016618"
 )
 
 type Module struct {
