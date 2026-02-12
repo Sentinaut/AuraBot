@@ -13,10 +13,11 @@ import (
 type Module struct {
 	welcomeChannelID    string
 	onboardingChannelID string
+	memberRoleID        string // granted AFTER username confirmed
 
-	// Roles
-	memberRoleID     string // granted AFTER username confirmed
-	unverifiedRoleID string // granted immediately on join, removed after verification
+	// Roles granted immediately on join:
+	unverifiedRoleID string // removed after username confirmed
+	joinRoleID       string // stays
 
 	mu       sync.Mutex
 	sessions map[string]*onboardSession // key = userID
@@ -30,14 +31,15 @@ type onboardSession struct {
 	CandidateName string
 }
 
-func New(welcomeChannelID, onboardingChannelID, _memberRoleID string) *Module {
+func New(welcomeChannelID, onboardingChannelID, memberRoleID string) *Module {
 	return &Module{
 		welcomeChannelID:    strings.TrimSpace(welcomeChannelID),
 		onboardingChannelID: strings.TrimSpace(onboardingChannelID),
+		memberRoleID:        strings.TrimSpace(memberRoleID),
 
-		// ✅ Hard-set to what you requested:
-		memberRoleID:     "1424750509683904615",
+		// Hard-set join roles:
 		unverifiedRoleID: "1465371447558934528",
+		joinRoleID:       "1471590620673085593",
 
 		sessions: make(map[string]*onboardSession),
 	}
@@ -59,10 +61,15 @@ func (m *Module) onGuildMemberAdd(s *discordgo.Session, e *discordgo.GuildMember
 		return
 	}
 
-	// ───────────── Give UNVERIFIED role immediately ─────────────
+	// ───────────── Give roles immediately on join ─────────────
 	if m.unverifiedRoleID != "" {
 		if err := s.GuildMemberRoleAdd(e.GuildID, e.User.ID, m.unverifiedRoleID); err != nil {
 			log.Printf("[welcoming] failed to add unverified role: %v", err)
+		}
+	}
+	if m.joinRoleID != "" {
+		if err := s.GuildMemberRoleAdd(e.GuildID, e.User.ID, m.joinRoleID); err != nil {
+			log.Printf("[welcoming] failed to add join role: %v", err)
 		}
 	}
 
@@ -201,7 +208,7 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 		Embeds:     []*discordgo.MessageEmbed{embed},
 		Components: components,
 		AllowedMentions: &discordgo.MessageAllowedMentions{
-			Parse: []discordgo.AllowedMentionType{},
+			Parse: []discordgo.AllowedMentionType{}, // ✅ FIXED TYPE
 		},
 	})
 	if err != nil {
@@ -271,14 +278,14 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 			log.Printf("[welcoming] failed to set nickname: %v", err)
 		}
 
-		// Give MEMBER role
+		// Give member role (whatever you pass into New / env config)
 		if m.memberRoleID != "" {
 			if err := s.GuildMemberRoleAdd(sess.GuildID, sess.UserID, m.memberRoleID); err != nil {
 				log.Printf("[welcoming] failed to add member role: %v", err)
 			}
 		}
 
-		// Remove UNVERIFIED role
+		// Remove unverified role after verification
 		if m.unverifiedRoleID != "" {
 			if err := s.GuildMemberRoleRemove(sess.GuildID, sess.UserID, m.unverifiedRoleID); err != nil {
 				log.Printf("[welcoming] failed to remove unverified role: %v", err)
@@ -286,6 +293,8 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 		}
 
 		// Delete the onboarding thread (and then the parent message).
+		// Note: deleting the parent message does NOT reliably remove the thread in Discord,
+		// so we explicitly delete the thread channel.
 		if _, err := s.ChannelDelete(sess.ThreadID); err != nil {
 			log.Printf("[welcoming] failed to delete onboarding thread: %v", err)
 
