@@ -38,6 +38,18 @@ const (
 	CountingRuinedRoleID = "1474438491625492619" // role given on mess-up
 )
 
+// ========================
+// 🔢 COUNTING CONFIG (ALL IDS HERE)
+// ========================
+const (
+	CountingEmoji200  = "200:1469034517938438235"
+	CountingEmoji500  = "500:1469034589505851647"
+	CountingEmoji1000 = "1000:1469034633885777960"
+
+	CountingCustomRuinerUserID = "614628933337350149"
+	CountingCustomRuinerGIFURL = "https://tenor.com/view/sydney-trains-scrapping-s-set-sad-double-decker-gif-16016618"
+)
+
 // ⭐ Channels that count toward starboard (manual stars)
 var StarChannels = []string{
 	"1474003503809564676", // #hotel-chat
@@ -110,7 +122,18 @@ func main() {
 		levelling.New(XPChannels, database.DB),
 
 		// 🔢 Counting (normal + trios) + ruined role for 16 hours
-		counting.New(ChannelCounting, ChannelCountingTrios, CountingRuinedRoleID, 16*time.Hour, database.DB),
+		counting.New(
+			ChannelCounting,
+			ChannelCountingTrios,
+			CountingRuinedRoleID,
+			16*time.Hour,
+			CountingEmoji200,
+			CountingEmoji500,
+			CountingEmoji1000,
+			CountingCustomRuinerUserID,
+			CountingCustomRuinerGIFURL,
+			database.DB,
+		),
 
 		// ✅ Autoroles (reaction roles)
 		autoroles.New(database.DB),
