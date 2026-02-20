@@ -17,40 +17,40 @@ import (
 )
 
 const (
-	ChannelSuggestions = "1454964654596948233" // #suggestions
-	ChannelVotes       = "1452677392127496224" // #votes
+	ChannelSuggestions = "1474154596082385009" // #suggestions
+	ChannelVotes       = "1474154463634784444" // #votes
 
-	ChannelStarboard = "1452582844210876458" // #starboard
+	ChannelStarboard = "1474437470706991308" // #starboard
 
 	// ⭐ Auto-react starboard channel
-	ChannelAutoStar = "1452584331917787216" // #ingame-pics
+	ChannelAutoStar = "1474162005396160563" // #ingame-pics
 
 	// 👋 Welcoming
-	ChannelWelcome    = "1452582377858535644" // #welcome
-	ChannelOnboarding = "1465095995066024031" // onboarding channel (no-role + staff)
+	ChannelWelcome    = "1474171848282603542" // #welcome
+	ChannelOnboarding = "1474437678509326397" // onboarding channel (no-role + staff)
 
-	AutoRoleID = "1424750509683904615" // Members (granted AFTER username confirmed)
+	AutoRoleID = "1474137421175062561" // Members (granted AFTER username confirmed)
 
 	// 🔢 Counting
-	ChannelCounting      = "1466485635467706511" // #counting
-	ChannelCountingTrios = "1468983165560557651" // #counting-trios
+	ChannelCounting      = "1474438358158544999" // #counting
+	ChannelCountingTrios = "1474438390333309000" // #counting-trios
 
-	CountingRuinedRoleID = "1456837115177341119" // role given on mess-up
+	CountingRuinedRoleID = "1474438491625492619" // role given on mess-up
 )
 
 // ⭐ Channels that count toward starboard (manual stars)
 var StarChannels = []string{
-	"1452583868786806894", // #general-chat
-	"1452584693672181770", // #builds
-	"1452585428149338203", // #creators
+	"1474003503809564676", // #hotel-chat
+	"1474160250994163856", // #vip-chat
 }
 
 // ⭐ XP-enabled channels
 var XPChannels = []string{
-	"1452583868786806894", // #general-chat
-	"1452584013482164327", // #off-topic
-	"1452613075659391049", // #staff-chat
-	"1452622004732559410", // #support-chat
+	"1474003503809564676", // #hotel-chat
+	"1474153467294519307", // #off-topic
+	"1474160250994163856", // #vip-chat
+	"1474165200511959264", // #casino-chat
+	"1474154178355138736", // #staff-chat
 }
 
 func main() {
