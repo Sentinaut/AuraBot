@@ -31,15 +31,15 @@ type onboardSession struct {
 	CandidateName string
 }
 
-func New(welcomeChannelID, onboardingChannelID, memberRoleID string) *Module {
+func New(welcomeChannelID, onboardingChannelID, memberRoleID, unverifiedRoleID, joinRoleID string) *Module {
 	return &Module{
 		welcomeChannelID:    strings.TrimSpace(welcomeChannelID),
 		onboardingChannelID: strings.TrimSpace(onboardingChannelID),
 		memberRoleID:        strings.TrimSpace(memberRoleID),
 
-		// Hard-set join roles:
-		unverifiedRoleID: "1465371447558934528",
-		joinRoleID:       "1471590620673085593",
+		// Injected from main.go:
+		unverifiedRoleID: strings.TrimSpace(unverifiedRoleID),
+		joinRoleID:       strings.TrimSpace(joinRoleID),
 
 		sessions: make(map[string]*onboardSession),
 	}
@@ -208,7 +208,7 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 		Embeds:     []*discordgo.MessageEmbed{embed},
 		Components: components,
 		AllowedMentions: &discordgo.MessageAllowedMentions{
-			Parse: []discordgo.AllowedMentionType{}, // ✅ FIXED TYPE
+			Parse: []discordgo.AllowedMentionType{},
 		},
 	})
 	if err != nil {
@@ -278,7 +278,7 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 			log.Printf("[welcoming] failed to set nickname: %v", err)
 		}
 
-		// Give member role (whatever you pass into New / env config)
+		// Give member role
 		if m.memberRoleID != "" {
 			if err := s.GuildMemberRoleAdd(sess.GuildID, sess.UserID, m.memberRoleID); err != nil {
 				log.Printf("[welcoming] failed to add member role: %v", err)
@@ -293,12 +293,10 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 		}
 
 		// Delete the onboarding thread (and then the parent message).
-		// Note: deleting the parent message does NOT reliably remove the thread in Discord,
-		// so we explicitly delete the thread channel.
 		if _, err := s.ChannelDelete(sess.ThreadID); err != nil {
 			log.Printf("[welcoming] failed to delete onboarding thread: %v", err)
 
-			// Fallback: archive + lock the thread so it disappears from active threads.
+			// Fallback: archive + lock
 			archived := true
 			locked := true
 			_, _ = s.ChannelEditComplex(sess.ThreadID, &discordgo.ChannelEdit{
