@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -35,7 +34,7 @@ type Module struct {
 	// DB queries intentionally ignore guild_id (single-server design).
 	guildID string
 
-	// Milestone roles (loaded from env)
+	// Milestone roles (configured from main.go now)
 	levelRoles map[int]string
 
 	// Cached guild member IDs (used to filter leaderboards to current members)
@@ -45,15 +44,16 @@ type Module struct {
 	rng   *rand.Rand
 }
 
-func New(channelIDs []string, db *sql.DB) *Module {
+// New now takes guildID + levelRoles from main.go (no env vars here anymore)
+func New(channelIDs []string, guildID string, levelRoles map[int]string, db *sql.DB) *Module {
 	m := &Module{
 		db:              db,
 		allowedChannels: make(map[string]struct{}, len(channelIDs)),
 		cooldown:        2 * time.Minute,
 		xpMin:           15,
 		xpMax:           25,
-		guildID:         strings.TrimSpace(os.Getenv("GUILD_ID")),
-		levelRoles:      parseLevelRolesFromEnv(),
+		guildID:         strings.TrimSpace(guildID),
+		levelRoles:      normalizeLevelRoles(levelRoles),
 	}
 
 	for _, id := range channelIDs {
