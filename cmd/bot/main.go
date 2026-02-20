@@ -39,8 +39,8 @@ const (
 
 	// Roles
 	MemberRoleID     = "1474137421175062561" // Members (granted AFTER username confirmed)
-	UnverifiedRoleID = "1465371447558934528" // granted immediately on join, removed after username confirmed
-	JoinRoleID       = "1471590620673085593" // granted immediately on join, stays
+	UnverifiedRoleID = "1474437678509326397" // granted immediately on join, removed after username confirmed
+	JoinRoleID       = "1474460525269352601" // granted immediately on join, stays
 
 	// 🔢 Counting
 	ChannelCounting      = "1474438358158544999" // #counting
