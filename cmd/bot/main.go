@@ -35,7 +35,7 @@ const (
 
 	// 👋 Welcoming
 	ChannelWelcome    = "1474171848282603542" // #welcome
-	ChannelOnboarding = "1474437678509326397" // onboarding channel (no-role + staff)
+	ChannelOnboarding = "1474447337840447658" // onboarding channel (no-role + staff)
 
 	AutoRoleID = "1474137421175062561" // Members (granted AFTER username confirmed)
 
@@ -48,9 +48,9 @@ const (
 
 // 🔢 COUNTING CONFIG
 const (
-	CountingEmoji200  = "200:1469034517938438235"
-	CountingEmoji500  = "500:1469034589505851647"
-	CountingEmoji1000 = "1000:1469034633885777960"
+	CountingEmoji200  = "200:1474445480468418684"
+	CountingEmoji500  = "500:1474446309321609370"
+	CountingEmoji1000 = "1000:1474445538937278596"
 
 	CountingCustomRuinerUserID = "614628933337350149"
 	CountingCustomRuinerGIFURL = "https://tenor.com/view/sydney-trains-scrapping-s-set-sad-double-decker-gif-16016618"
@@ -58,11 +58,11 @@ const (
 
 // 🎖️ Levelling milestone roles (stack roles)
 var LevelRoles = map[int]string{
-	3:  "1459232402588303523",
-	5:  "1456441246749818981",
-	10: "1456441420104597648",
-	15: "1456441623956426832",
-	20: "1456441675109892168",
+	3:  "1474150309310759054",
+	5:  "1474150347164614757",
+	10: "1474150368870010974",
+	15: "1474150392983191776",
+	20: "1474150395348779250",
 }
 
 // ⭐ Channels that count toward starboard (manual stars)
