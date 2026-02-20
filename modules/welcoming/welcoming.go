@@ -57,7 +57,8 @@ func (m *Module) Register(s *discordgo.Session) error {
 func (m *Module) Start(ctx context.Context, s *discordgo.Session) error { return nil }
 
 func (m *Module) onGuildMemberAdd(s *discordgo.Session, e *discordgo.GuildMemberAdd) {
-	if e == nil || e.User == nil {
+	if e == nil || e.User == nil || e.User.Bot {
+		// ❌ Ignore bots entirely (no roles, no welcome, no thread)
 		return
 	}
 
