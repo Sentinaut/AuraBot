@@ -37,7 +37,10 @@ const (
 	ChannelWelcome    = "1474171848282603542" // #welcome
 	ChannelOnboarding = "1474447337840447658" // onboarding channel (no-role + staff)
 
-	AutoRoleID = "1474137421175062561" // Members (granted AFTER username confirmed)
+	// Roles
+	MemberRoleID     = "1474137421175062561" // Members (granted AFTER username confirmed)
+	UnverifiedRoleID = "1465371447558934528" // granted immediately on join, removed after username confirmed
+	JoinRoleID       = "1471590620673085593" // granted immediately on join, stays
 
 	// 🔢 Counting
 	ChannelCounting      = "1474438358158544999" // #counting
@@ -134,7 +137,7 @@ func main() {
 		// ⭐ Starboard leaderboard command
 		starboard.NewTopStars(database.DB),
 
-		// ⭐ Levelling / XP system (no env vars now)
+		// ⭐ Levelling / XP system
 		levelling.New(XPChannels, GuildID, LevelRoles, database.DB),
 
 		// 🔢 Counting (normal + trios) + ruined role for 16 hours
@@ -164,8 +167,13 @@ func main() {
 		),
 
 		// 👋 Welcoming (+ onboarding username thread)
-		// Member role is granted only after username confirmed.
-		welcoming.New(ChannelWelcome, ChannelOnboarding, AutoRoleID),
+		welcoming.New(
+			ChannelWelcome,
+			ChannelOnboarding,
+			MemberRoleID,
+			UnverifiedRoleID,
+			JoinRoleID,
+		),
 
 		// If you want texttalk enabled from main.go, uncomment this and add the import:
 		// texttalk.New(TextTalkChannelID),
