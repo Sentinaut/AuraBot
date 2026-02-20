@@ -38,9 +38,7 @@ const (
 	CountingRuinedRoleID = "1474438491625492619" // role given on mess-up
 )
 
-// ========================
-// 🔢 COUNTING CONFIG (ALL IDS HERE)
-// ========================
+// 🔢 COUNTING CONFIG
 const (
 	CountingEmoji200  = "200:1469034517938438235"
 	CountingEmoji500  = "500:1469034589505851647"
