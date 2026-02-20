@@ -17,19 +17,20 @@ type Module struct {
 	originalID  string // Store the original channel ID
 }
 
-// New function to initialize the module
-func New() *Module {
-	return &Module{}
+// New now takes the channel ID from main.go (no env var here anymore)
+func New(channelID string) *Module {
+	return &Module{
+		channelID: strings.TrimSpace(channelID),
+	}
 }
 
 // Register method to initialize the module with a session
 func (m *Module) Register(session *discordgo.Session) error {
 	m.session = session // Access the bot's session
 
-	// Fetch the channel ID from environment variable or set a default one
-	m.channelID = strings.TrimSpace(os.Getenv("TEXTTALK_CHANNEL_ID"))
-	if m.channelID == "" {
-		log.Println("[texttalk] TEXTTALK_CHANNEL_ID not set, module disabled")
+	// If no channel configured, disable module
+	if strings.TrimSpace(m.channelID) == "" {
+		log.Println("[texttalk] channel ID not set, module disabled")
 		return nil
 	}
 
@@ -66,9 +67,7 @@ func (m *Module) Name() string {
 }
 
 // Start method must match the signature expected by the bot.Module interface
-// Now accepting context and session parameters
 func (m *Module) Start(ctx context.Context, session *discordgo.Session) error {
-	// This method is required but not needed in this case
 	return nil
 }
 
@@ -156,5 +155,5 @@ func (m *Module) changeToDefaultChannel() {
 	m.channelName = channel.Name
 
 	// Log the reset
-	log.Printf("[texttalk] Changed to original channel %s (%s)", m.channelName, m.channelID)
+	log.Printf("[texttalk] Changed to original channel %s (%s)", m.channelName, m.originalID)
 }
