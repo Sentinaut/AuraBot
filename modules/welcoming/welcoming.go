@@ -49,6 +49,7 @@ func (m *Module) Name() string { return "welcoming" }
 
 func (m *Module) Register(s *discordgo.Session) error {
 	s.AddHandler(m.onGuildMemberAdd)
+	s.AddHandler(m.onGuildMemberRemove) // cleanup if they leave before verify
 	s.AddHandler(m.onMessageCreate)
 	s.AddHandler(m.onInteractionCreate)
 	return nil
@@ -58,19 +59,19 @@ func (m *Module) Start(ctx context.Context, s *discordgo.Session) error { return
 
 func (m *Module) onGuildMemberAdd(s *discordgo.Session, e *discordgo.GuildMemberAdd) {
 	if e == nil || e.User == nil || e.User.Bot {
-		// ❌ Ignore bots entirely (no roles, no welcome, no thread)
+		// Ignore bots entirely (no roles, no welcome, no thread)
 		return
 	}
 
 	// ───────────── Give roles immediately on join ─────────────
 	if m.unverifiedRoleID != "" {
 		if err := s.GuildMemberRoleAdd(e.GuildID, e.User.ID, m.unverifiedRoleID); err != nil {
-			log.Printf("[welcoming] failed to add unverified role: %v", err)
+			log.Printf("[welcoming] failed to add unverified role (user=%s role=%s): %v", e.User.ID, m.unverifiedRoleID, err)
 		}
 	}
 	if m.joinRoleID != "" {
 		if err := s.GuildMemberRoleAdd(e.GuildID, e.User.ID, m.joinRoleID); err != nil {
-			log.Printf("[welcoming] failed to add join role: %v", err)
+			log.Printf("[welcoming] failed to add join role (user=%s role=%s): %v", e.User.ID, m.joinRoleID, err)
 		}
 	}
 
@@ -121,6 +122,16 @@ func (m *Module) onGuildMemberAdd(s *discordgo.Session, e *discordgo.GuildMember
 		return
 	}
 
+	// ✅ Store session IMMEDIATELY (so we can clean up even if they leave mid-setup)
+	m.mu.Lock()
+	m.sessions[e.User.ID] = &onboardSession{
+		GuildID:     e.GuildID,
+		UserID:      e.User.ID,
+		ParentMsgID: parent.ID,
+		ThreadID:    "",
+	}
+	m.mu.Unlock()
+
 	// Create thread for that message
 	thread, err := s.MessageThreadStartComplex(
 		m.onboardingChannelID,
@@ -135,17 +146,65 @@ func (m *Module) onGuildMemberAdd(s *discordgo.Session, e *discordgo.GuildMember
 		return
 	}
 
-	// Store session
+	// ✅ Update session with thread ID
 	m.mu.Lock()
-	m.sessions[e.User.ID] = &onboardSession{
-		GuildID:     e.GuildID,
-		UserID:      e.User.ID,
-		ParentMsgID: parent.ID,
-		ThreadID:    thread.ID,
+	if sess := m.sessions[e.User.ID]; sess != nil {
+		sess.ThreadID = thread.ID
 	}
 	m.mu.Unlock()
 
 	_, _ = s.ChannelMessageSend(thread.ID, "Please type in your username below (no spaces).")
+}
+
+// If they leave before verifying, delete their thread + parent message.
+func (m *Module) onGuildMemberRemove(s *discordgo.Session, e *discordgo.GuildMemberRemove) {
+	if e == nil || e.User == nil {
+		return
+	}
+	if e.User.Bot {
+		return
+	}
+
+	userID := e.User.ID
+
+	// Pull + remove session
+	m.mu.Lock()
+	sess := m.sessions[userID]
+	if sess != nil {
+		delete(m.sessions, userID)
+	}
+	m.mu.Unlock()
+
+	if sess == nil {
+		return
+	}
+
+	// Delete the onboarding thread if we have it
+	if sess.ThreadID != "" {
+		if _, err := s.ChannelDelete(sess.ThreadID); err != nil {
+			log.Printf("[welcoming] cleanup: failed to delete onboarding thread (user=%s thread=%s): %v", userID, sess.ThreadID, err)
+
+			// Fallback: archive + lock (in case delete perms are missing)
+			archived := true
+			locked := true
+			if _, err2 := s.ChannelEditComplex(sess.ThreadID, &discordgo.ChannelEdit{
+				Archived: &archived,
+				Locked:   &locked,
+			}); err2 != nil {
+				log.Printf("[welcoming] cleanup: failed to archive+lock thread (user=%s thread=%s): %v", userID, sess.ThreadID, err2)
+			}
+		}
+	}
+
+	// Delete the parent message in the onboarding channel (always try)
+	if m.onboardingChannelID != "" && sess.ParentMsgID != "" {
+		if err := s.ChannelMessageDelete(m.onboardingChannelID, sess.ParentMsgID); err != nil {
+			log.Printf("[welcoming] cleanup: failed to delete onboarding parent message (user=%s channel=%s msg=%s): %v",
+				userID, m.onboardingChannelID, sess.ParentMsgID, err)
+		}
+	}
+
+	log.Printf("[welcoming] cleanup: user left before verification; removed onboarding thread/message (user=%s)", userID)
 }
 
 func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreate) {
