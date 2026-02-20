@@ -17,6 +17,14 @@ import (
 )
 
 const (
+	// Used for slash command *registration scope* (guild vs global)
+	GuildID = "1424138040862839009"
+
+	// Optional (only used if you enable the texttalk module in this file)
+	TextTalkChannelID = "1452613075659391049"
+)
+
+const (
 	ChannelSuggestions = "1474154596082385009" // #suggestions
 	ChannelVotes       = "1474154463634784444" // #votes
 
@@ -47,6 +55,15 @@ const (
 	CountingCustomRuinerUserID = "614628933337350149"
 	CountingCustomRuinerGIFURL = "https://tenor.com/view/sydney-trains-scrapping-s-set-sad-double-decker-gif-16016618"
 )
+
+// 🎖️ Levelling milestone roles (stack roles)
+var LevelRoles = map[int]string{
+	3:  "1459232402588303523",
+	5:  "1456441246749818981",
+	10: "1456441420104597648",
+	15: "1456441623956426832",
+	20: "1456441675109892168",
+}
 
 // ⭐ Channels that count toward starboard (manual stars)
 var StarChannels = []string{
@@ -117,8 +134,8 @@ func main() {
 		// ⭐ Starboard leaderboard command
 		starboard.NewTopStars(database.DB),
 
-		// ⭐ Levelling / XP system
-		levelling.New(XPChannels, database.DB),
+		// ⭐ Levelling / XP system (no env vars now)
+		levelling.New(XPChannels, GuildID, LevelRoles, database.DB),
 
 		// 🔢 Counting (normal + trios) + ruined role for 16 hours
 		counting.New(
@@ -149,6 +166,9 @@ func main() {
 		// 👋 Welcoming (+ onboarding username thread)
 		// Member role is granted only after username confirmed.
 		welcoming.New(ChannelWelcome, ChannelOnboarding, AutoRoleID),
+
+		// If you want texttalk enabled from main.go, uncomment this and add the import:
+		// texttalk.New(TextTalkChannelID),
 	})
 	if err != nil {
 		log.Fatal(err)
