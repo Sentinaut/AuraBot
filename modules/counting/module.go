@@ -15,14 +15,19 @@ const (
 	reactHighScore = "☑️"
 	reactBad       = "❌"
 	reactHundred   = "💯"
+)
 
-	emoji200  = "200:1469034517938438235"
-	emoji500  = "500:1469034589505851647"
-	emoji1000 = "1000:1469034633885777960"
+// NOTE:
+// These are intentionally VARIABLES (not const) so they can be injected from cmd/bot/main.go.
+// Other counting files can continue to reference emoji200/emoji500/emoji1000/customRuinerUserID/customRuinerGIFURL
+// without needing edits.
+var (
+	emoji200  string
+	emoji500  string
+	emoji1000 string
 
-	// Custom "ruined the count" user + media
-	customRuinerUserID = "614628933337350149"
-	customRuinerGIFURL = "https://tenor.com/view/sydney-trains-scrapping-s-set-sad-double-decker-gif-16016618"
+	customRuinerUserID string
+	customRuinerGIFURL string
 )
 
 type Module struct {
@@ -34,17 +39,61 @@ type Module struct {
 	ruinedRoleID string
 	ruinedFor    time.Duration
 
+	// Stored on the module too (useful if you later want m.emoji200 style access)
+	emoji200  string
+	emoji500  string
+	emoji1000 string
+
+	customRuinerUserID string
+	customRuinerGIFURL string
+
 	stop chan struct{}
 }
 
-func New(countingChannelID, triosChannelID, ruinedRoleID string, ruinedFor time.Duration, db *sql.DB) *Module {
+// New creates the counting module.
+// All IDs/URLs are passed in from cmd/bot/main.go so nothing is hardcoded inside the module.
+func New(
+	countingChannelID string,
+	triosChannelID string,
+	ruinedRoleID string,
+	ruinedFor time.Duration,
+	inEmoji200 string,
+	inEmoji500 string,
+	inEmoji1000 string,
+	inCustomRuinerUserID string,
+	inCustomRuinerGIFURL string,
+	db *sql.DB,
+) *Module {
+
+	// Normalize values
+	inEmoji200 = strings.TrimSpace(inEmoji200)
+	inEmoji500 = strings.TrimSpace(inEmoji500)
+	inEmoji1000 = strings.TrimSpace(inEmoji1000)
+	inCustomRuinerUserID = strings.TrimSpace(inCustomRuinerUserID)
+	inCustomRuinerGIFURL = strings.TrimSpace(inCustomRuinerGIFURL)
+
+	// Set package-level vars so existing files can continue referencing them
+	emoji200 = inEmoji200
+	emoji500 = inEmoji500
+	emoji1000 = inEmoji1000
+	customRuinerUserID = inCustomRuinerUserID
+	customRuinerGIFURL = inCustomRuinerGIFURL
+
 	return &Module{
 		db:                db,
 		countingChannelID: strings.TrimSpace(countingChannelID),
 		triosChannelID:    strings.TrimSpace(triosChannelID),
 		ruinedRoleID:      strings.TrimSpace(ruinedRoleID),
 		ruinedFor:         ruinedFor,
-		stop:              make(chan struct{}),
+
+		emoji200:  inEmoji200,
+		emoji500:  inEmoji500,
+		emoji1000: inEmoji1000,
+
+		customRuinerUserID: inCustomRuinerUserID,
+		customRuinerGIFURL: inCustomRuinerGIFURL,
+
+		stop: make(chan struct{}),
 	}
 }
 
