@@ -22,7 +22,7 @@ type Module struct {
 	autoVerifyEnabled bool
 
 	// Roles granted immediately on join:
-	unverifiedRoleID string // removed after username confirmed (if autoVerifyEnabled)
+	unverifiedRoleID string // removed after username confirmed
 	joinRoleID       string // stays
 
 	mu       sync.Mutex
@@ -43,6 +43,7 @@ func New(welcomeChannelID, onboardingChannelID, memberRoleID, unverifiedRoleID, 
 		onboardingChannelID: strings.TrimSpace(onboardingChannelID),
 		memberRoleID:        strings.TrimSpace(memberRoleID),
 
+		// Injected from main.go:
 		unverifiedRoleID: strings.TrimSpace(unverifiedRoleID),
 		joinRoleID:       strings.TrimSpace(joinRoleID),
 
@@ -57,7 +58,7 @@ func (m *Module) Name() string { return "welcoming" }
 func (m *Module) Register(s *discordgo.Session) error {
 	s.AddHandler(m.onReady)
 	s.AddHandler(m.onGuildMemberAdd)
-	s.AddHandler(m.onGuildMemberRemove)
+	s.AddHandler(m.onGuildMemberRemove) // cleanup if they leave before verify
 	s.AddHandler(m.onMessageCreate)
 	s.AddHandler(m.onInteractionCreate)
 	return nil
@@ -85,7 +86,7 @@ func (m *Module) onReady(s *discordgo.Session, r *discordgo.Ready) {
 		DMPermission: func() *bool { b := false; return &b }(),
 	}
 
-	// Register per-guild.
+	// Register per-guild for fast availability.
 	if s.State == nil || len(s.State.Guilds) == 0 {
 		log.Println("[welcoming] cannot register commands: no guilds in state yet")
 		return
@@ -103,10 +104,11 @@ func (m *Module) onReady(s *discordgo.Session, r *discordgo.Ready) {
 
 func (m *Module) onGuildMemberAdd(s *discordgo.Session, e *discordgo.GuildMemberAdd) {
 	if e == nil || e.User == nil || e.User.Bot {
+		// Ignore bots entirely (no roles, no welcome, no thread)
 		return
 	}
 
-	// Roles immediately on join
+	// ───────────── Give roles immediately on join ─────────────
 	if m.unverifiedRoleID != "" {
 		if err := s.GuildMemberRoleAdd(e.GuildID, e.User.ID, m.unverifiedRoleID); err != nil {
 			log.Printf("[welcoming] failed to add unverified role (user=%s role=%s): %v", e.User.ID, m.unverifiedRoleID, err)
@@ -118,7 +120,7 @@ func (m *Module) onGuildMemberAdd(s *discordgo.Session, e *discordgo.GuildMember
 		}
 	}
 
-	// Welcome message
+	// ───────────── Welcome embed in #welcome ─────────────
 	if m.welcomeChannelID != "" {
 		memberCount := 0
 		if g, err := s.State.Guild(e.GuildID); err == nil && g != nil {
@@ -129,12 +131,14 @@ func (m *Module) onGuildMemberAdd(s *discordgo.Session, e *discordgo.GuildMember
 			Title: "👋 Welcome!",
 			Description: "Welcome to Aura! Please head over to the onboarding channel to set your username.\n\n" +
 				"Once you've set your username, you'll be verified automatically (if enabled) and can chat with everyone.",
-			Footer: &discordgo.MessageEmbedFooter{Text: "Member #" + itoa(memberCount)},
+			Footer: &discordgo.MessageEmbedFooter{
+				Text: "Member #" + itoa(memberCount),
+			},
 		}
 		_, _ = s.ChannelMessageSendEmbed(m.welcomeChannelID, embed)
 	}
 
-	// Create onboarding thread
+	// ───────────── Create onboarding message + thread ─────────────
 	if m.onboardingChannelID == "" {
 		return
 	}
@@ -178,6 +182,7 @@ func (m *Module) onGuildMemberRemove(s *discordgo.Session, e *discordgo.GuildMem
 		return
 	}
 
+	// Cleanup if they leave before verifying:
 	m.mu.Lock()
 	sess := m.sessions[e.User.ID]
 	if sess != nil {
@@ -189,6 +194,7 @@ func (m *Module) onGuildMemberRemove(s *discordgo.Session, e *discordgo.GuildMem
 		return
 	}
 
+	// Delete the thread and the parent message if possible.
 	if sess.ThreadID != "" {
 		if _, err := s.ChannelDelete(sess.ThreadID); err != nil {
 			log.Printf("[welcoming] failed to delete onboarding thread on member remove: %v", err)
@@ -209,6 +215,7 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 		return
 	}
 
+	// Only care about messages in onboarding threads we created
 	m.mu.Lock()
 	var sess *onboardSession
 	for _, v := range m.sessions {
@@ -228,6 +235,7 @@ func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreat
 		return
 	}
 
+	// Save candidate username
 	m.mu.Lock()
 	sess.CandidateName = content
 	m.mu.Unlock()
@@ -259,11 +267,9 @@ func sendConfirm(s *discordgo.Session, channelID, name, userID string) {
 	}
 
 	_, err := s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
-		Embeds:     []*discordgo.MessageEmbed{embed},
-		Components: components,
-		AllowedMentions: &discordgo.MessageAllowedMentions{
-			Parse: []discordgo.AllowedMentionType{},
-		},
+		Embeds:         []*discordgo.MessageEmbed{embed},
+		Components:     components,
+		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}},
 	})
 	if err != nil {
 		log.Printf("[welcoming] failed to send confirm embed: %v", err)
@@ -313,6 +319,7 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 		action := parts[1]
 		userID := parts[2]
 
+		// Only the target user can click
 		if i.Member == nil || i.Member.User == nil || i.Member.User.ID != userID {
 			_ = s.InteractionRespond(i.Interaction, ephemeral("Those buttons aren’t for you 🙂"))
 			return
@@ -326,7 +333,7 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 			return
 		}
 
-		// Disable buttons on clicked message
+		// Disable buttons on the message they clicked
 		_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseUpdateMessage,
 			Data: &discordgo.InteractionResponseData{
@@ -339,13 +346,12 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 			m.mu.Lock()
 			sess.CandidateName = ""
 			m.mu.Unlock()
+
 			_, _ = s.ChannelMessageSend(sess.ThreadID, "Please type in your username below")
-			return
 
 		case "yes":
 			m.mu.Lock()
 			name := strings.TrimSpace(sess.CandidateName)
-			autoVerify := m.autoVerifyEnabled
 			m.mu.Unlock()
 
 			if name == "" {
@@ -353,40 +359,45 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 				return
 			}
 
-			// Set nickname
+			// Set nickname (ignore error if perms missing)
 			if err := s.GuildMemberNickname(sess.GuildID, sess.UserID, name); err != nil {
 				log.Printf("[welcoming] failed to set nickname: %v", err)
 			}
 
-			// If manual mode: @everyone notify for approval
+			// Auto-verify toggle:
+			m.mu.Lock()
+			autoVerify := m.autoVerifyEnabled
+			m.mu.Unlock()
+
+			// If manual mode: mention @everyone for approval
 			if !autoVerify {
-				notifyCh := m.onboardingChannelID
-				if notifyCh == "" {
-					notifyCh = m.welcomeChannelID
-				}
-				if notifyCh == "" {
-					notifyCh = sess.ThreadID
+				// Post in onboarding channel (fallback to thread if onboarding not set)
+				targetChannelID := m.onboardingChannelID
+				if targetChannelID == "" {
+					targetChannelID = sess.ThreadID
 				}
 
-				msg := "@everyone\n" + name + " has set their username and is awaiting approval"
-				_, err := s.ChannelMessageSendComplex(notifyCh, &discordgo.MessageSend{
-					Content: msg,
+				content := "@everyone\n" + name + " has set their username and is awaiting approval"
+				_, err := s.ChannelMessageSendComplex(targetChannelID, &discordgo.MessageSend{
+					Content: content,
 					AllowedMentions: &discordgo.MessageAllowedMentions{
 						Parse: []discordgo.AllowedMentionType{discordgo.AllowedMentionTypeEveryone},
 					},
 				})
 				if err != nil {
-					log.Printf("[welcoming] failed to send manual-approval @everyone message: %v", err)
+					log.Printf("[welcoming] failed to send @everyone manual-approval message: %v", err)
 				}
 			}
 
-			// Auto-verify actions
 			if autoVerify {
+				// Give member role
 				if m.memberRoleID != "" {
 					if err := s.GuildMemberRoleAdd(sess.GuildID, sess.UserID, m.memberRoleID); err != nil {
 						log.Printf("[welcoming] failed to add member role: %v", err)
 					}
 				}
+
+				// Remove unverified role after verification
 				if m.unverifiedRoleID != "" {
 					if err := s.GuildMemberRoleRemove(sess.GuildID, sess.UserID, m.unverifiedRoleID); err != nil {
 						log.Printf("[welcoming] failed to remove unverified role: %v", err)
@@ -394,9 +405,11 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 				}
 			}
 
-			// Delete thread (fallback archive+lock)
+			// Delete the onboarding thread (and then the parent message).
 			if _, err := s.ChannelDelete(sess.ThreadID); err != nil {
 				log.Printf("[welcoming] failed to delete onboarding thread: %v", err)
+
+				// Fallback: archive + lock
 				archived := true
 				locked := true
 				_, _ = s.ChannelEditComplex(sess.ThreadID, &discordgo.ChannelEdit{
@@ -409,11 +422,15 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 				log.Printf("[welcoming] failed to delete onboarding parent message: %v", err)
 			}
 
+			// End session
 			m.mu.Lock()
 			delete(m.sessions, userID)
 			m.mu.Unlock()
-			return
 		}
+		return
+
+	default:
+		return
 	}
 }
 
