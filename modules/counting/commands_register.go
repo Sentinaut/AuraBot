@@ -2,8 +2,6 @@ package counting
 
 import (
 	"log"
-	"os"
-	"strings"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -18,7 +16,7 @@ func (m *Module) onReady(s *discordgo.Session, r *discordgo.Ready) {
 		return
 	}
 
-	guildID := strings.TrimSpace(os.Getenv("GUILD_ID")) // optional, like starboard
+	guildID := m.guildID
 
 	_ = deleteCommandsByName(s, appID, guildID, "countingleaderboard")
 	_ = deleteCommandsByName(s, appID, guildID, "countinginfo")
