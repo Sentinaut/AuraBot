@@ -18,7 +18,7 @@ import (
 
 const (
 	// Used for slash command *registration scope* (guild vs global)
-	GuildID = "1424138040862839009"
+	GuildID = "1474003503809564672"
 
 	// Optional (only used if you enable the texttalk module in this file)
 	TextTalkChannelID = "1452613075659391049"
@@ -121,7 +121,7 @@ func main() {
 	}
 	for _, ch := range StarChannels {
 		starRules[ch] = starboard.ChannelRule{
-			AutoReact:  false,
+			AutoReact: false,
 			Threshold: 5,
 		}
 	}
@@ -135,13 +135,14 @@ func main() {
 		),
 
 		// ⭐ Starboard leaderboard command
-		starboard.NewTopStars(database.DB),
+		starboard.NewTopStars(database.DB, GuildID),
 
 		// ⭐ Levelling / XP system
 		levelling.New(XPChannels, GuildID, LevelRoles, database.DB),
 
 		// 🔢 Counting (normal + trios) + ruined role for 16 hours
 		counting.New(
+			GuildID,
 			ChannelCounting,
 			ChannelCountingTrios,
 			CountingRuinedRoleID,
@@ -155,7 +156,7 @@ func main() {
 		),
 
 		// ✅ Autoroles (reaction roles)
-		autoroles.New(database.DB),
+		autoroles.New(database.DB, GuildID),
 
 		// 🗳️ Voting threads (👍👎 + auto thread)
 		votingthreads.New(
