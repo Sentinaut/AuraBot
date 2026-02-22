@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -15,13 +14,15 @@ import (
 
 type TopStarsModule struct {
 	db      *sql.DB
-	guildID string // optional, from env
+	guildID string // used only for slash-command scope (guild vs global)
 }
 
-func NewTopStars(db *sql.DB) *TopStarsModule {
+// NewTopStars creates the /topstars command module.
+// guildID is used ONLY for slash command registration scope.
+func NewTopStars(db *sql.DB, guildID string) *TopStarsModule {
 	return &TopStarsModule{
 		db:      db,
-		guildID: strings.TrimSpace(os.Getenv("GUILD_ID")), // optional
+		guildID: strings.TrimSpace(guildID),
 	}
 }
 
