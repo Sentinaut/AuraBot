@@ -33,6 +33,10 @@ var (
 type Module struct {
 	db *sql.DB
 
+	// Used ONLY for slash-command scope (guild vs global registration).
+	// DB queries intentionally ignore guild_id (single-server design).
+	guildID string
+
 	countingChannelID string
 	triosChannelID    string
 
@@ -53,6 +57,7 @@ type Module struct {
 // New creates the counting module.
 // All IDs/URLs are passed in from cmd/bot/main.go so nothing is hardcoded inside the module.
 func New(
+	guildID string,
 	countingChannelID string,
 	triosChannelID string,
 	ruinedRoleID string,
@@ -66,6 +71,7 @@ func New(
 ) *Module {
 
 	// Normalize values
+	guildID = strings.TrimSpace(guildID)
 	inEmoji200 = strings.TrimSpace(inEmoji200)
 	inEmoji500 = strings.TrimSpace(inEmoji500)
 	inEmoji1000 = strings.TrimSpace(inEmoji1000)
@@ -81,6 +87,7 @@ func New(
 
 	return &Module{
 		db:                db,
+		guildID:           guildID,
 		countingChannelID: strings.TrimSpace(countingChannelID),
 		triosChannelID:    strings.TrimSpace(triosChannelID),
 		ruinedRoleID:      strings.TrimSpace(ruinedRoleID),
