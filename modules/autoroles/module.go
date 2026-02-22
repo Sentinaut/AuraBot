@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"log"
-	"os"
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
@@ -12,13 +11,15 @@ import (
 
 type Module struct {
 	db      *sql.DB
-	guildID string // optional: if set, commands register instantly for that guild
+	guildID string // if set, commands register instantly for that guild (single-server design)
 }
 
-func New(db *sql.DB) *Module {
+// New creates the autoroles module.
+// guildID is used ONLY for slash command registration scope (guild vs global).
+func New(db *sql.DB, guildID string) *Module {
 	return &Module{
 		db:      db,
-		guildID: strings.TrimSpace(os.Getenv("GUILD_ID")),
+		guildID: strings.TrimSpace(guildID),
 	}
 }
 
