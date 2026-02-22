@@ -5,7 +5,9 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
+	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -20,6 +22,8 @@ type Module interface {
 type Runner struct {
 	Session *discordgo.Session
 	Modules []Module
+
+	cleanupOnce sync.Once
 }
 
 func NewRunner(token string, modules []Module) (*Runner, error) {
@@ -39,6 +43,12 @@ func NewRunner(token string, modules []Module) (*Runner, error) {
 }
 
 func (r *Runner) Run() error {
+	// If you're running AuraBot in a single guild, old GLOBAL slash commands can
+	// hang around and show as duplicates alongside GUILD commands.
+	//
+	// We wipe all GLOBAL commands once on Ready when GUILD_ID is set.
+	r.Session.AddHandler(r.onReadyGlobalCommandCleanup)
+
 	for _, m := range r.Modules {
 		if err := m.Register(r.Session); err != nil {
 			return err
@@ -70,4 +80,32 @@ func (r *Runner) Run() error {
 	cancel()
 	time.Sleep(300 * time.Millisecond)
 	return nil
+}
+
+func (r *Runner) onReadyGlobalCommandCleanup(s *discordgo.Session, _ *discordgo.Ready) {
+	r.cleanupOnce.Do(func() {
+		guildID := strings.TrimSpace(os.Getenv("GUILD_ID"))
+		if guildID == "" {
+			// Not in single-guild mode (or GUILD_ID not set). Do nothing.
+			return
+		}
+
+		appID := ""
+		if s.State != nil && s.State.User != nil {
+			appID = s.State.User.ID
+		}
+		if appID == "" {
+			log.Println("[bot] global command cleanup skipped: missing application ID")
+			return
+		}
+
+		// Bulk overwrite GLOBAL commands with an empty list = delete all globals.
+		// This prevents the Discord client from showing global+guild duplicates.
+		if _, err := s.ApplicationCommandBulkOverwrite(appID, "", []*discordgo.ApplicationCommand{}); err != nil {
+			log.Printf("[bot] global command cleanup failed: %v", err)
+			return
+		}
+
+		log.Printf("[bot] cleared all GLOBAL slash commands (single-guild mode: %s)", guildID)
+	})
 }
