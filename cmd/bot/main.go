@@ -42,6 +42,9 @@ const (
 	UnverifiedRoleID = "1474437678509326397" // granted immediately on join, removed after username confirmed
 	JoinRoleID       = "1474460525269352601" // granted immediately on join, stays
 
+	// Staff role to ping when auto-verify is OFF
+	StaffRoleID = "1475957292578115644"
+
 	// 🔢 Counting
 	ChannelCounting      = "1474438358158544999" // #counting
 	ChannelCountingTrios = "1474438390333309000" // #counting-trios
@@ -174,6 +177,7 @@ func main() {
 			MemberRoleID,
 			UnverifiedRoleID,
 			JoinRoleID,
+			StaffRoleID,
 		),
 
 		// If you want texttalk enabled from main.go, uncomment this and add the import:
