@@ -7,6 +7,8 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
+const staffRoleID = "1475957292578115644"
+
 func (m *Module) onMessageCreate(s *discordgo.Session, e *discordgo.MessageCreate) {
 	if e == nil || e.Author == nil || e.Author.Bot {
 		return
@@ -67,7 +69,7 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 		return
 	}
 
-	// ───────────── Button clicks: welcoming:yes:<userID> / welcoming:no:<userID> ─────────────
+	// ───────────── Button clicks ─────────────
 	if i.Type != discordgo.InteractionMessageComponent {
 		return
 	}
@@ -94,13 +96,11 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 		return
 	}
 
-	// Only the target user can click their buttons.
 	if clickerID != targetUserID {
 		_ = s.InteractionRespond(i.Interaction, ephemeral("These buttons aren’t for you."))
 		return
 	}
 
-	// Find their session
 	m.mu.Lock()
 	sess := m.sessions[targetUserID]
 	autoVerify := m.autoVerifyEnabled
@@ -111,7 +111,7 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 		return
 	}
 
-	// Disable buttons on the original confirm message
+	// Disable buttons
 	if i.Message != nil {
 		components := disableAllButtons(i.Message)
 		if components != nil {
@@ -131,7 +131,6 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 		return
 	}
 
-	// Must have a candidate name
 	m.mu.Lock()
 	name := strings.TrimSpace(sess.CandidateName)
 	m.mu.Unlock()
@@ -144,40 +143,39 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 	// Set nickname
 	if err := s.GuildMemberNickname(sess.GuildID, targetUserID, name); err != nil {
 		log.Printf("[welcoming] failed to set nickname: %v", err)
-		_ = s.InteractionRespond(i.Interaction, ephemeral("I couldn’t set your nickname (missing permissions?). A staff member may need to help."))
+		_ = s.InteractionRespond(i.Interaction, ephemeral("I couldn’t set your nickname (missing permissions?)."))
 		return
 	}
 
-	// Optionally do roles (auto-verify)
+	// Auto verify ON
 	if autoVerify {
 		if m.memberRoleID != "" {
-			if err := s.GuildMemberRoleAdd(sess.GuildID, targetUserID, m.memberRoleID); err != nil {
-				log.Printf("[welcoming] failed to add member role: %v", err)
-			}
+			_ = s.GuildMemberRoleAdd(sess.GuildID, targetUserID, m.memberRoleID)
 		}
 		if m.unverifiedRoleID != "" {
-			if err := s.GuildMemberRoleRemove(sess.GuildID, targetUserID, m.unverifiedRoleID); err != nil {
-				log.Printf("[welcoming] failed to remove unverified role: %v", err)
+			_ = s.GuildMemberRoleRemove(sess.GuildID, targetUserID, m.unverifiedRoleID)
+		}
+	} else {
+		// ✅ Auto verify OFF → notify staff
+		if m.onboardingChannelID != "" {
+			msg := "<@&" + staffRoleID + "> <@" + targetUserID + "> has set their username and needs verification."
+			if _, err := s.ChannelMessageSend(m.onboardingChannelID, msg); err != nil {
+				log.Printf("[welcoming] failed to notify staff: %v", err)
 			}
 		}
 	}
 
 	_ = s.InteractionRespond(i.Interaction, ephemeral("✅ Done! Your nickname has been set to **"+escapeMarkdown(name)+"**."))
 
-	// Cleanup: delete thread + parent message + session
+	// Cleanup
 	m.mu.Lock()
 	delete(m.sessions, targetUserID)
 	m.mu.Unlock()
 
-	// Delete thread + parent message
 	if sess.ThreadID != "" {
-		if _, err := s.ChannelDelete(sess.ThreadID); err != nil {
-			log.Printf("[welcoming] failed to delete onboarding thread after confirm: %v", err)
-		}
+		_, _ = s.ChannelDelete(sess.ThreadID)
 	}
 	if sess.ParentMsgID != "" && m.onboardingChannelID != "" {
-		if err := s.ChannelMessageDelete(m.onboardingChannelID, sess.ParentMsgID); err != nil {
-			log.Printf("[welcoming] failed to delete onboarding parent message after confirm: %v", err)
-		}
+		_ = s.ChannelMessageDelete(m.onboardingChannelID, sess.ParentMsgID)
 	}
 }
