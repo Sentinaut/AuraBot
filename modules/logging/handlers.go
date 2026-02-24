@@ -85,10 +85,3 @@ func (m *Module) shouldRepostTrade(msg *discordgo.Message) bool {
 	}
 	return false
 }
-
-func discordMessageLink(guildID, channelID, messageID string) string {
-	if guildID == "" || channelID == "" || messageID == "" {
-		return ""
-	}
-	return fmt.Sprintf("https://discord.com/channels/%s/%s/%s", guildID, channelID, messageID)
-}
