@@ -1,7 +1,6 @@
 package logging
 
 import (
-	"fmt"
 	"log"
 	"strings"
 
@@ -42,16 +41,7 @@ func (m *Module) onMessageCreate(s *discordgo.Session, ev *discordgo.MessageCrea
 		return
 	}
 
-	// Repost the original content + embeds, and include a permalink.
-	link := discordMessageLink(m.guildID, msg.ChannelID, msg.ID)
 	content := strings.TrimSpace(msg.Content)
-	if link != "" {
-		if content == "" {
-			content = fmt.Sprintf("Original: %s", link)
-		} else {
-			content = fmt.Sprintf("%s\n\nOriginal: %s", content, link)
-		}
-	}
 
 	_, err := s.ChannelMessageSendComplex(m.targetChannelID, &discordgo.MessageSend{
 		Content: content,
