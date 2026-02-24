@@ -25,6 +25,9 @@ type Module struct {
 	unverifiedRoleID string // removed after username confirmed
 	joinRoleID       string // stays
 
+	// Staff role pinged when auto-verify is OFF
+	staffRoleID string
+
 	mu       sync.Mutex
 	sessions map[string]*onboardSession // key = userID
 }
@@ -37,7 +40,7 @@ type onboardSession struct {
 	CandidateName string
 }
 
-func New(welcomeChannelID, onboardingChannelID, memberRoleID, unverifiedRoleID, joinRoleID string) *Module {
+func New(welcomeChannelID, onboardingChannelID, memberRoleID, unverifiedRoleID, joinRoleID, staffRoleID string) *Module {
 	return &Module{
 		welcomeChannelID:    strings.TrimSpace(welcomeChannelID),
 		onboardingChannelID: strings.TrimSpace(onboardingChannelID),
@@ -46,6 +49,7 @@ func New(welcomeChannelID, onboardingChannelID, memberRoleID, unverifiedRoleID, 
 		// Injected from main.go:
 		unverifiedRoleID: strings.TrimSpace(unverifiedRoleID),
 		joinRoleID:       strings.TrimSpace(joinRoleID),
+		staffRoleID:      strings.TrimSpace(staffRoleID),
 
 		autoVerifyEnabled: envBoolDefault("WELCOMING_AUTOVERIFY_DEFAULT", true),
 
