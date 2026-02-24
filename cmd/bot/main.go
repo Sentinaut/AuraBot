@@ -11,6 +11,7 @@ import (
 	"github.com/Sentinaut/AuraBot/modules/autoroles"
 	"github.com/Sentinaut/AuraBot/modules/counting"
 	"github.com/Sentinaut/AuraBot/modules/levelling"
+	"github.com/Sentinaut/AuraBot/modules/logging"
 	"github.com/Sentinaut/AuraBot/modules/starboard"
 	"github.com/Sentinaut/AuraBot/modules/votingthreads"
 	"github.com/Sentinaut/AuraBot/modules/welcoming"
@@ -23,6 +24,32 @@ const (
 	// Optional (only used if you enable the texttalk module in this file)
 	TextTalkChannelID = "1452613075659391049"
 )
+
+// 🧾 LOGGING (repost selected log lines)
+const (
+	ChannelTradeLogs   = "1474589469167587368" // #trade-logs
+	ChannelStoreLogs   = "1475258347316838442" // #store-logs
+	ChannelCommandLogs = "1475258454745677979" // #command-logs
+
+	// Where matching log messages should be reposted.
+	// Leave empty ("") to disable reposting.
+	ChannelLogRepostTarget = "1475964732677554266"
+)
+
+// Usernames to repost for (case-insensitive match).
+//
+// - Trade logs: message starts with "New Trade!" and the first embed contains the sender username in bold.
+//   We repost the trade if EITHER the sender OR receiver is in this list.
+// - Store/Command logs: first word of the message content is treated as the username.
+var LogRepostUsernames = []string{
+	"Adam",
+	"Sentinaut",
+	"Aveeno",
+	"Train",
+	"Anubis",
+	"Luke",
+	"Rayserr",
+}
 
 const (
 	ChannelSuggestions = "1474154596082385009" // #suggestions
@@ -130,6 +157,16 @@ func main() {
 	}
 
 	r, err := bot.NewRunner(cfg.Token, []bot.Module{
+		// 🧾 Log reposting (trade/store/command logs)
+		logging.New(
+			GuildID,
+			ChannelLogRepostTarget,
+			ChannelTradeLogs,
+			ChannelStoreLogs,
+			ChannelCommandLogs,
+			LogRepostUsernames,
+		),
+
 		// ⭐ Starboard system
 		starboard.NewStarboard(
 			starRules,
