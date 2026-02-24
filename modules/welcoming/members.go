@@ -6,6 +6,36 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
+// Registers /toggleautoverify as a GUILD command.
+// This fires on startup (for each guild) and whenever the bot joins a new guild.
+func (m *Module) onGuildCreate(s *discordgo.Session, e *discordgo.GuildCreate) {
+	if e == nil || e.Guild == nil || e.Guild.ID == "" {
+		return
+	}
+
+	// Application ID for command registration (discordgo common pattern)
+	if s.State == nil || s.State.User == nil || s.State.User.ID == "" {
+		log.Printf("[welcoming] cannot register /toggleautoverify: missing application ID")
+		return
+	}
+	appID := s.State.User.ID
+
+	cmd := &discordgo.ApplicationCommand{
+		Name:        "toggleautoverify",
+		Description: "Toggle auto-verify: roles + unverified removal vs nickname-only",
+		DefaultMemberPermissions: func() *int64 {
+			p := int64(discordgo.PermissionManageGuild)
+			return &p
+		}(),
+		DMPermission: func() *bool { b := false; return &b }(),
+	}
+
+	_, err := s.ApplicationCommandCreate(appID, e.Guild.ID, cmd)
+	if err != nil {
+		log.Printf("[welcoming] failed to register /toggleautoverify in guild %s: %v", e.Guild.ID, err)
+	}
+}
+
 func (m *Module) onGuildMemberAdd(s *discordgo.Session, e *discordgo.GuildMemberAdd) {
 	if e == nil || e.User == nil || e.User.Bot {
 		// Ignore bots entirely (no roles, no welcome, no thread)
