@@ -56,7 +56,9 @@ func New(welcomeChannelID, onboardingChannelID, memberRoleID, unverifiedRoleID, 
 func (m *Module) Name() string { return "welcoming" }
 
 func (m *Module) Register(s *discordgo.Session) error {
-	s.AddHandler(m.onReady)
+	// Register slash commands reliably per guild
+	s.AddHandler(m.onGuildCreate)
+
 	s.AddHandler(m.onGuildMemberAdd)
 	s.AddHandler(m.onGuildMemberRemove) // cleanup if they leave before verify
 	s.AddHandler(m.onMessageCreate)
