@@ -162,7 +162,16 @@ func (m *Module) onInteractionCreate(s *discordgo.Session, i *discordgo.Interact
 		}
 	} else {
 		// Auto-verify is OFF: notify staff for manual verification.
-		if m.onboardingChannelID != "" && m.staffRoleID != "" {
+		// Guard against duplicate pings if this handler fires twice.
+		shouldNotify := false
+		m.mu.Lock()
+		if sess != nil && !sess.NotifiedStaff {
+			sess.NotifiedStaff = true
+			shouldNotify = true
+		}
+		m.mu.Unlock()
+
+		if shouldNotify && m.onboardingChannelID != "" && m.staffRoleID != "" {
 			msg := "<@&" + m.staffRoleID + "> <@" + targetUserID + "> has set their username and needs verification."
 			if _, err := s.ChannelMessageSend(m.onboardingChannelID, msg); err != nil {
 				log.Printf("[welcoming] failed to notify staff for manual verification: %v", err)
