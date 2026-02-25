@@ -102,10 +102,11 @@ func (m *Module) onGuildMemberAdd(s *discordgo.Session, e *discordgo.GuildMember
 
 	m.mu.Lock()
 	m.sessions[e.User.ID] = &onboardSession{
-		GuildID:     e.GuildID,
-		UserID:      e.User.ID,
-		ParentMsgID: parent.ID,
-		ThreadID:    th.ID,
+		GuildID:       e.GuildID,
+		UserID:        e.User.ID,
+		ParentMsgID:   parent.ID,
+		ThreadID:      th.ID,
+		NotifiedStaff: false,
 	}
 	m.mu.Unlock()
 
