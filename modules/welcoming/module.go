@@ -38,6 +38,10 @@ type onboardSession struct {
 	ParentMsgID   string
 	ThreadID      string
 	CandidateName string
+
+	// Prevent duplicate staff pings if the interaction handler fires twice
+	// (e.g. module registered twice, reconnect edge cases, etc.).
+	NotifiedStaff bool
 }
 
 func New(welcomeChannelID, onboardingChannelID, memberRoleID, unverifiedRoleID, joinRoleID, staffRoleID string) *Module {
