@@ -48,7 +48,8 @@ var LogRepostUsernames = []string{
 	"Anubis",
 	"Luke",
 	"blaze",
-	"2",
+	"syh",
+	"Skylaaaa",
 }
 
 const (
