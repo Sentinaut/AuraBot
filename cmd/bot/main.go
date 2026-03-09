@@ -56,6 +56,7 @@ var LogRepostUsernames = []string{
 	"syh",
 	// Trial Mod
 	"blaze",
+	// Event Staff
 	"Skylaaaa",
 }
 
