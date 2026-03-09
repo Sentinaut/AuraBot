@@ -44,11 +44,11 @@ const (
 var LogRepostUsernames = []string{
 	"Adam",
 	"Sentinaut",
-	"Aveeno",
 	"Train",
 	"Anubis",
 	"Luke",
-	"Rayserr",
+	"blaze",
+	"2",
 }
 
 const (
