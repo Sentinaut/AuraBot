@@ -42,13 +42,20 @@ const (
 //   We repost the trade if EITHER the sender OR receiver is in this list.
 // - Store/Command logs: first word of the message content is treated as the username.
 var LogRepostUsernames = []string{
+	// Owner
 	"Adam",
-	"Sentinaut",
 	"Train",
+	// Manager
+	// Events Manager
+	// Discord Admin
+	"Sentinaut",
+	// Developer
 	"Anubis",
 	"Luke",
-	"blaze",
+	// Moderator
 	"syh",
+	// Trial Mod
+	"blaze",
 	"Skylaaaa",
 }
 
