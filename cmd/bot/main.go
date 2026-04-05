@@ -38,26 +38,27 @@ const (
 
 // Usernames to repost for (case-insensitive match).
 //
-// - Trade logs: message starts with "New Trade!" and the first embed contains the sender username in bold.
-//   We repost the trade if EITHER the sender OR receiver is in this list.
-// - Store/Command logs: first word of the message content is treated as the username.
+//   - Trade logs: message starts with "New Trade!" and the first embed contains the sender username in bold.
+//     We repost the trade if EITHER the sender OR receiver is in this list.
+//   - Store/Command logs: first word of the message content is treated as the username.
 var LogRepostUsernames = []string{
 	// Owner
 	"Adam",
 	"Train",
+	"Syh",
 	// Manager
 	// Events Manager
+	"Autumn",
 	// Discord Admin
 	"Sentinaut",
 	// Developer
-	"Anubis",
 	"Luke",
+	"405",
 	// Moderator
-	"syh",
-	// Trial Mod
 	"blaze",
+	// Trial Mod
+	"Vee",
 	// Event Staff
-	"Skylaaaa",
 }
 
 const (
